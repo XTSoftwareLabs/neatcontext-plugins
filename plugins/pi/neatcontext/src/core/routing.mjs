@@ -284,18 +284,56 @@ export function renderMenu(entries, { connectedId, mode } = {}) {
     lines.push(`- **${entry.name}**${marker} — ${describe(entry)}`);
   }
   lines.push("");
-  lines.push(
+  lines.push(...routingInstructions(mode));
+  return lines.join("\n");
+}
+
+// Shared with the shortlist below, because a shortlist is still a menu: the
+// same model still decides, still asks first in ask mode, and still must not
+// route on a follow-up. Only the number of things it chooses between differs.
+function routingInstructions(mode) {
+  return [
     mode === "auto"
       ? "Routing is on (auto). When the user's request clearly belongs to one of the other contexts above, switch to it with the `use_context` tool, then call `get_context` and answer from what it returns. Say in one line that you switched, and which context you are now on. When two contexts are both plausible, do not guess — name them and ask which one."
-      : "Routing is on (ask). When the user's request clearly belongs to one of the other contexts above, say so and ask before switching — never switch first. If they agree, call `use_context`, then `get_context`, and answer from what it returns."
-  );
-  lines.push(
-    "Do not route on follow-ups, short replies, or anything that continues the current topic — a switch needs a request that stands on its own and plainly belongs elsewhere. If the user declines a switch, drop it and do not raise that context again this session."
-  );
-  lines.push(
+      : "Routing is on (ask). When the user's request clearly belongs to one of the other contexts above, say so and ask before switching — never switch first. If they agree, call `use_context`, then `get_context`, and answer from what it returns.",
+    "Do not route on follow-ups, short replies, or anything that continues the current topic — a switch needs a request that stands on its own and plainly belongs elsewhere. If the user declines a switch, drop it and do not raise that context again this session.",
     "When the user corrects a wrong route, pass what they called it as `alias` to `use_context` so the same words route correctly next time."
+  ];
+}
+
+// The same menu, cut down to what the request actually reached.
+//
+// Two things change against the full list. It is short, so each entry can
+// afford to say why it is there — the words from the request that landed — and
+// a session choosing between two of them has something to read besides its own
+// impression. And it is in match order rather than alphabetical, which is the
+// order a reader wanted in the first place.
+//
+// The absence of a context is information too, so the list says so outright.
+// Left unsaid, a short list reads like the whole store, and a model that cannot
+// find what it wants in it starts reaching for the closest thing there.
+export function renderShortlist(entries, { connectedId, mode } = {}) {
+  if (mode === "manual" || entries.length === 0) {
+    return null;
+  }
+  const lines = ["## Contexts that match what the user just asked", ""];
+  for (const entry of entries) {
+    const marker = entry.id === connectedId ? " **(connected)**" : "";
+    lines.push(`- **${entry.name}**${marker} — ${describe(entry)}${matchNote(entry)}`);
+  }
+  lines.push("");
+  lines.push(
+    "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — that is a reason to stay where you are, not to reach for the closest one here."
   );
+  lines.push(...routingInstructions(mode));
   return lines.join("\n");
+}
+
+function matchNote(entry) {
+  if (!Array.isArray(entry.matched) || entry.matched.length === 0) {
+    return "";
+  }
+  return ` _(matched: ${entry.matched.join(", ")})_`;
 }
 
 // Merges what exists right now with what has been derived about it. The context
