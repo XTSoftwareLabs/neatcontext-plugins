@@ -69,6 +69,8 @@ For creation:
   "name": "Short specific name",
   "profile": "# Short specific name\n\n## Purpose\n...",
   "routingDescription": "Scope-only routing description",
+  "routingQuestions": ["why was checkout throwing 5xx last week", "..."],
+  "routingEntities": ["INC-1001", "checkout-api", "pgbouncer"],
   "knowledge": [
     {
       "path": "session-summary.md",
@@ -77,6 +79,8 @@ For creation:
   ]
 }
 ```
+
+`routingQuestions` holds 10 to 15 questions this context should answer, in the words a user would type rather than the words the profile uses. `routingEntities` holds the names that appear in this work and rarely elsewhere: services, repos, ticket ids, error strings, commands. Both are matched against and never shown, so prefer coverage over polish. On an update, omit both to leave the stored lists alone.
 
 For an update, also include the exact `targetId` and `baseHash` printed by `save-target`. Every knowledge path must be a short relative `.md` path.
 

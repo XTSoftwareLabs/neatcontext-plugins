@@ -1019,7 +1019,17 @@ function renderUpdatePreview(preview) {
 // hosts write JSON to disk and shell out to a CLI because their plugin runs in a
 // different process, and this one does not.
 export async function saveContext(args = {}) {
-  const { name, targetId, baseHash, profile, routingDescription, knowledge, confirm } = args;
+  const {
+    name,
+    targetId,
+    baseHash,
+    profile,
+    routingDescription,
+    routingQuestions,
+    routingEntities,
+    knowledge,
+    confirm
+  } = args;
 
   if (typeof profile !== "string" || profile.trim().length === 0) {
     return saveTarget(typeof name === "string" ? name : "");
@@ -1032,6 +1042,10 @@ export async function saveContext(args = {}) {
     routingDescription: typeof routingDescription === "string" ? routingDescription : "",
     knowledge: Array.isArray(knowledge) ? knowledge : []
   };
+  // Left off the capture entirely when the caller said nothing, so an update
+  // leaves whatever is stored alone rather than clearing it.
+  if (routingQuestions !== undefined) capture.routingQuestions = routingQuestions;
+  if (routingEntities !== undefined) capture.routingEntities = routingEntities;
 
   try {
     if (typeof targetId === "string" && targetId.length > 0) {
