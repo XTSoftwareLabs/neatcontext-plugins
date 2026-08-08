@@ -42,6 +42,24 @@ describe("every host asks for the matching material", () => {
       assert.match(text, /never shown|matched against and never shown|Matched against, never shown/i);
     });
 
+    it(`${host} says the lists travel and must stay portable`, async () => {
+      // The lists go into the bundle, and the bundle is meant to be handed to a
+      // teammate intact. A host that asks for hostnames or people gets a
+      // context that is worse to share than the work it came from.
+      const text = await readFile(path.join(root, file), "utf8");
+      assert.match(text, /travels? with the context|travel with the context/i);
+      assert.match(text, /absolute paths/i);
+      assert.match(text, /usernames|personal names/i);
+    });
+
+    it(`${host} never asks for hostnames or people`, async () => {
+      // The wording this replaced did, which is how machine- and person-
+      // specific terms would have reached a shared bundle.
+      const text = await readFile(path.join(root, file), "utf8");
+      assert.ok(!/error strings, commands, hosts/i.test(text), `${file} still asks for hosts`);
+      assert.ok(!/commands, hosts, people/i.test(text), `${file} still asks for people`);
+    });
+
     it(`${host} says omitting them leaves stored lists alone`, async () => {
       // The rule that stops a host from wiping what another host wrote.
       const text = await readFile(path.join(root, file), "utf8");
