@@ -56,11 +56,13 @@ import {
   putCard,
   readRouting,
   renderMenu,
+  renderShortlist,
   resolveMode,
   sessionId,
   setMode,
   switchPolicy
 } from "../core/routing.mjs";
+import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
 import {
   applySelection,
   disconnectSelection,
@@ -116,24 +118,72 @@ export async function activeContext() {
 
 // --- the notes the plugin adds to every turn ---------------------------------
 
-// What the model needs to route: every context that exists, one line each on
-// what it is for, and the rules for acting on that. Rebuilt on demand rather
-// than cached, so `/neatcontext-mode` and a context created mid-session both
-// take effect on the next turn instead of on the next restart.
-async function routingMenu() {
+// What the model needs to route: the contexts worth considering, one line each
+// on what they are for, and the rules for acting on that. Rebuilt on demand
+// rather than cached, so `/neatcontext-mode` and a context created mid-session
+// both take effect on the next turn instead of on the next restart.
+//
+// With a request to match against, that is the few contexts that matched it;
+// without one it is everything, alphabetically, as it has always been.
+const SHORTLIST_LIMIT = 5;
+const SHORTLIST_MIN_CONTEXTS = 8;
+
+// One index for this process. pi runs the extension in-process, so this lives
+// as long as the session does and is rebuilt when the contexts change rather
+// than per question.
+const rankContexts = createRoutingIndex({
+  listFiles: async (record) =>
+    (await listKnowledgeFiles(record.knowledgeFolder, { limit: 60 })).files
+});
+
+async function routingMenu(query) {
   const [{ contexts }, state] = await Promise.all([listAllContexts(), readRouting()]);
   const selection = await readSelection().catch(() => null);
-  return renderMenu(menuEntries(contexts, state), {
+  const options = {
     connectedId: selection?.contextId ?? null,
     mode: resolveMode(state, sessionId())
-  });
+  };
+  const entries = menuEntries(contexts, state);
+  const shortlist = await shortlistFor(contexts, state, entries, query);
+  return shortlist
+    ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
+    : renderMenu(entries, options);
+}
+
+// A shortlist needs three things: a request to match against, enough contexts
+// that narrowing gains anything, and at least one that actually matched. Any of
+// them missing and the full menu goes out instead — a session is never left
+// with less to work with than it has today.
+async function shortlistFor(contexts, state, entries, query) {
+  if (
+    typeof query !== "string" ||
+    query.trim().length === 0 ||
+    entries.length < SHORTLIST_MIN_CONTEXTS
+  ) {
+    return null;
+  }
+  const ranked = await rankContexts(contexts, state, query, { limit: SHORTLIST_LIMIT });
+  if (ranked.length === 0) {
+    return null;
+  }
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  // The score travels with the entry because how far ahead the leader is
+  // decides whether the shortlist names a winner or asks a question.
+  return ranked.map((result) => ({
+    ...byId.get(result.id),
+    matched: result.matched,
+    score: result.score
+  }));
 }
 
 // The routing menu when there is one, and how connecting works here. The
 // connection rule goes last, so it is the closest thing to the answer the
 // session is about to write — and it is the one part that is never omitted.
-export async function pluginNotes() {
-  const menu = await routingMenu().catch(() => null);
+//
+// Called with no query from the per-turn system prompt, which has no request to
+// match against, and with one from get_context.
+export async function pluginNotes(query) {
+  const menu = await routingMenu(query).catch(() => null);
   return menu ? `${menu}\n\n${CONNECTION_RULE}` : CONNECTION_RULE;
 }
 
@@ -255,7 +305,7 @@ export async function declareExtension({ id, capability, tools, important } = {}
   return added.text;
 }
 
-export async function getContext() {
+export async function getContext(query) {
   const context = await activeContext();
   if (context) {
     const body = context.missing
@@ -263,10 +313,10 @@ export async function getContext() {
       : await renderContext(context.record);
     const extensions = renderExtensions(await resolveExtensions(context));
     const parts = extensions ? [body, extensions] : [body];
-    return `${parts.join("\n\n")}\n\n${await pluginNotes()}`;
+    return `${parts.join("\n\n")}\n\n${await pluginNotes(query)}`;
   }
   await resolveExtensions(null);
-  return `${NOTHING_CONNECTED}\n\n${await pluginNotes()}`;
+  return `${NOTHING_CONNECTED}\n\n${await pluginNotes(query)}`;
 }
 
 // --- routing tools ------------------------------------------------------------

@@ -203,7 +203,11 @@ async function knowledgeFolder(home, files = { "runbook.md": "# Runbook\n" }) {
   return folder;
 }
 
-async function createContext(home, name, { sessionId = "copilot-test" } = {}) {
+async function createContext(
+  home,
+  name,
+  { sessionId = "copilot-test", useWhen = `Questions about ${name}` } = {}
+) {
   const folder = await knowledgeFolder(home);
   const profileFile = path.join(home.directory, `${name.replace(/\W+/g, "-")}-profile.md`);
   await writeFile(
@@ -222,7 +226,7 @@ async function createContext(home, name, { sessionId = "copilot-test" } = {}) {
       "--profile-from",
       profileFile,
       "--use-when",
-      `Questions about ${name}`
+      useWhen
     ],
     { env: { ...home.env, NEATCONTEXT_SESSION_ID: sessionId } }
   );
@@ -661,4 +665,56 @@ test("Copilot plugin registers no hooks and nothing that runs on its own", async
 
   const cliText = await readFile(cli, "utf8");
   assert.doesNotMatch(cliText, /save-nudge|noteSaved/);
+});
+
+test("Copilot narrows the routing menu to the request", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-shortlist-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: "copilot-shortlist" };
+
+  const corpus = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi plugin", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+  for (const [name, useWhen] of corpus) {
+    await createContext(home, name, { sessionId: "copilot-shortlist", useWhen });
+  }
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const tools = await session.call({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  const getContext = tools.result.tools.find((tool) => tool.name === "get_context");
+  assert.equal(getContext.inputSchema.properties.query.type, "string");
+
+  const matched = await session.call(
+    toolCall(3, "get_context", { query: "why is checkout throwing 5xx" })
+  );
+  assert.match(matched.result.content[0].text, /## Contexts that match what the user just asked/);
+  assert.match(matched.result.content[0].text, /INC-1001 checkout/);
+  assert.ok(!matched.result.content[0].text.includes("Docker container"));
+
+  // No request to match against, so nothing is hidden.
+  const everything = await session.call(toolCall(4, "get_context"));
+  assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
+  assert.match(everything.result.content[0].text, /Docker container/);
+
+  // A request that reaches nothing must not hide the store behind an empty
+  // shortlist — the full menu is the safe answer.
+  const unmatched = await session.call(
+    toolCall(5, "get_context", { query: "what is the capital of France" })
+  );
+  assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
+  assert.match(unmatched.result.content[0].text, /Docker container/);
 });

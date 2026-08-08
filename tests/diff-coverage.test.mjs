@@ -24,6 +24,27 @@ describe("which files the gate polices", () => {
     );
   });
 
+  it("takes every host's adapter, not only Claude Code's", () => {
+    // A change applied to five bridges at once must be checked on five bridges.
+    assert.equal(isGatedFile("plugins/copilot/neatcontext/src/copilot/mcp-bridge.mjs"), true);
+    assert.equal(isGatedFile("plugins/kimi-code/neatcontext/src/kimi/mcp-bridge.mjs"), true);
+    assert.equal(isGatedFile("codex-marketplace/plugins/neatcontext/src/codex/mcp-bridge.mjs"), true);
+    assert.equal(isGatedFile("plugins/pi/neatcontext/src/pi/runtime.mjs"), true);
+    assert.equal(isGatedFile("plugins/pi/neatcontext/extensions/neatcontext.js"), true);
+  });
+
+  it("leaves out the generated copies of the Context core", () => {
+    // They are byte-identical to Claude Code's by two other checks, and Claude's
+    // copy is gated — so requiring the same line to run five times would prove
+    // nothing that equality has not already proven.
+    assert.equal(isGatedFile("plugins/copilot/neatcontext/src/core/routing.mjs"), false);
+    assert.equal(isGatedFile("plugins/kimi-code/neatcontext/src/core/routing.mjs"), false);
+    assert.equal(isGatedFile("plugins/pi/neatcontext/src/core/routing.mjs"), false);
+    assert.equal(isGatedFile("codex-marketplace/plugins/neatcontext/src/core/routing.mjs"), false);
+    // Claude's copy stays gated, and it is the one the unit tests import.
+    assert.equal(isGatedFile("plugins/claude-code/neatcontext/src/core/routing.mjs"), true);
+  });
+
   it("leaves out tests, docs, and the gate's own tooling", () => {
     // A test file runs by definition; counting it would only dilute the gate.
     assert.equal(isGatedFile("tests/context.test.mjs"), false);

@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { closeSession } from "../../tests/process-helpers.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const marketplaceRoot = path.resolve(here, "..");
 const repositoryRoot = path.resolve(marketplaceRoot, "..");
@@ -70,9 +72,10 @@ function rpcSession(env) {
   }
   return {
     call,
+    // Ends stdin and waits, rather than killing: a killed child never flushes
+    // its V8 coverage profile, so everything it ran reads as untested.
     close() {
-      child.stdin.end();
-      child.kill();
+      return closeSession(child);
     }
   };
 }
@@ -263,7 +266,7 @@ test("MCP bridge does not advertise get_context for an empty installation", asyn
     assert.match(staleCall.result.content[0].text, /Continue normal work/);
     assert.match(staleCall.result.content[0].text, /do not retry/i);
   } finally {
-    rpc.close();
+    await rpc.close();
   }
 });
 
@@ -334,6 +337,80 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     assert.match(getContext.description, /already selected for this thread/);
     assert.match(getContext.description, /Do not call merely/);
   } finally {
-    rpc.close();
+    await rpc.close();
+  }
+});
+
+test("Codex narrows the routing menu to the request", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "neatcontext-codex-shortlist-"));
+  const env = { NEATCONTEXT_HOME: home, CODEX_THREAD_ID: "shortlist-thread" };
+  const corpus = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi plugin", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+  for (const [name, routingDescription] of corpus) {
+    const capturePath = path.join(home, `${name.replace(/\W+/g, "-")}.json`);
+    await writeFile(
+      capturePath,
+      JSON.stringify({
+        schema: 1,
+        name,
+        profile: `# ${name}\n\n## Purpose\n${routingDescription}\n\n## What to do\nAnswer.\n\n## What to avoid\nGuessing.\n\n## Behavior\nBe concise.`,
+        routingDescription,
+        knowledge: [{ path: "session-summary.md", content: `# ${name}\n\n${routingDescription}` }]
+      }),
+      "utf8"
+    );
+    assert.equal((await runNode(cli, ["save", "--from", capturePath, "--consume"], { env })).code, 0);
+  }
+  assert.equal((await runNode(cli, ["use", "Refunds"], { env })).code, 0);
+
+  const session = rpcSession(env);
+  try {
+    await session.call({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } }
+    });
+    const matched = await session.call({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "get_context", arguments: { query: "why is checkout throwing 5xx" } }
+    });
+    const narrowed = matched.result.content[0].text;
+    assert.match(narrowed, /## Contexts that match what the user just asked/);
+    assert.match(narrowed, /INC-1001 checkout/);
+    assert.ok(!narrowed.includes("Docker container"));
+
+    const everything = await session.call({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "get_context", arguments: {} }
+    });
+    assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
+    assert.match(everything.result.content[0].text, /Docker container/);
+
+    // A request that reaches nothing must not hide the store behind an empty
+    // shortlist — the full menu is the safe answer.
+    const unmatched = await session.call({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "get_context", arguments: { query: "what is the capital of France" } }
+    });
+    assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
+    assert.match(unmatched.result.content[0].text, /Docker container/);
+  } finally {
+    await session.close();
   }
 });
