@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { closeSession } from "../../tests/process-helpers.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const marketplaceRoot = path.resolve(here, "..");
 const repositoryRoot = path.resolve(marketplaceRoot, "..");
@@ -70,9 +72,10 @@ function rpcSession(env) {
   }
   return {
     call,
+    // Ends stdin and waits, rather than killing: a killed child never flushes
+    // its V8 coverage profile, so everything it ran reads as untested.
     close() {
-      child.stdin.end();
-      child.kill();
+      return closeSession(child);
     }
   };
 }
@@ -263,7 +266,7 @@ test("MCP bridge does not advertise get_context for an empty installation", asyn
     assert.match(staleCall.result.content[0].text, /Continue normal work/);
     assert.match(staleCall.result.content[0].text, /do not retry/i);
   } finally {
-    rpc.close();
+    await rpc.close();
   }
 });
 
@@ -334,7 +337,7 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     assert.match(getContext.description, /already selected for this thread/);
     assert.match(getContext.description, /Do not call merely/);
   } finally {
-    rpc.close();
+    await rpc.close();
   }
 });
 
@@ -396,7 +399,18 @@ test("Codex narrows the routing menu to the request", async () => {
     });
     assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
     assert.match(everything.result.content[0].text, /Docker container/);
+
+    // A request that reaches nothing must not hide the store behind an empty
+    // shortlist — the full menu is the safe answer.
+    const unmatched = await session.call({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "get_context", arguments: { query: "what is the capital of France" } }
+    });
+    assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
+    assert.match(unmatched.result.content[0].text, /Docker container/);
   } finally {
-    session.close();
+    await session.close();
   }
 });

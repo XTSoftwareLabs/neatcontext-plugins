@@ -709,4 +709,12 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   const everything = await session.call(toolCall(4, "get_context"));
   assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
   assert.match(everything.result.content[0].text, /Docker container/);
+
+  // A request that reaches nothing must not hide the store behind an empty
+  // shortlist — the full menu is the safe answer.
+  const unmatched = await session.call(
+    toolCall(5, "get_context", { query: "what is the capital of France" })
+  );
+  assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
+  assert.match(unmatched.result.content[0].text, /Docker container/);
 });

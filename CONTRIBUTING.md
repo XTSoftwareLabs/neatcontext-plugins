@@ -24,7 +24,7 @@ The plugin is dependency-free. Before opening a PR, sanity-check the scripts:
 npm run check           # node --check on each host helper script
 npm run validate:plugin # Claude Code marketplace validation, warnings included
 npm test                # local storage and host integration tests
-npm run coverage        # every changed Claude-plugin source line must run in a test
+npm run coverage        # every changed host source line must run in a test
 ```
 
 CI (`.github/workflows/ci.yml`) runs `npm run check` and `npm test` on every
@@ -37,10 +37,24 @@ single required check is `ci`, which passes only when every CI job did.
 ## Diff coverage
 
 `npm run coverage` runs the suite and fails if any line the branch adds or
-changes under the Claude plugin's `src/` directory was never executed.
-Whole-file coverage is not the bar — much of this code predates the tests — but
-new code has to arrive with a test that runs it. Other isolated host packages
-have their own integration tests in the repository suite.
+changes in a host's shipped source was never executed. Whole-file coverage is
+not the bar — much of this code predates the tests — but new code has to arrive
+with a test that runs it.
+
+Every host is gated, not just Claude Code: `src/claude`, `src/copilot`,
+`src/kimi`, `src/codex`, and pi's `src/pi` and `extensions/`. A change applied
+to five bridges at once has to be checked on five bridges.
+
+The one exclusion is the Context core copied into each plugin's `src/core/`.
+Those copies are generated from `shared/core` and proven byte-identical twice
+over — `npm run sync:context -- --check` fails when one drifts, and the host
+tests assert equality against Claude Code's. Claude's copy is gated and is the
+one the unit tests import, so requiring the same line to run five times would
+prove nothing that equality has not already proven.
+
+A test that spawns a host process must let it exit rather than kill it, or the
+child never flushes its coverage profile and everything it ran reads as
+untested. Use `closeSession` from `tests/process-helpers.mjs`.
 
 Almost everything here is exercised the way the coding hosts exercise it: the
 MCP bridges and CLIs are spawned as child processes, which `node --test

@@ -209,3 +209,18 @@ describe("commands", () => {
     assert.match(api.messages[0].content, /No single context matched/);
   });
 });
+
+describe("the get_context tool", () => {
+  it("takes an optional request and passes it through to the notes", async () => {
+    // The tool is the only path a query can arrive on in pi, so its schema and
+    // its hand-off are worth pinning rather than inferring from the runtime.
+    const tool = api.tools.get("get_context");
+    assert.equal(tool.parameters.properties.query.type, "string");
+
+    const withQuery = await tool.execute("id-1", { query: "partition lag" }, null, null, fakeCtx());
+    assert.match(withQuery.content[0].text, /NeatContext/);
+
+    const without = await tool.execute("id-2", {}, null, null, fakeCtx());
+    assert.match(without.content[0].text, /NeatContext/);
+  });
+});

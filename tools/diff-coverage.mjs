@@ -32,13 +32,50 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLAUDE_PLUGIN_ROOT = "plugins/claude-code/neatcontext";
 
-// The plugin's shipped code. Tests are excluded on purpose: a test file is
-// covered by definition, and counting it would only dilute the gate.
+// Every host's shipped code, not just Claude Code's.
+//
+// The gate watched one plugin for a while, which was fine when the other hosts
+// were forks that rarely moved. It stopped being fine the moment a change had
+// to be applied to five bridges at once: the four ports sailed through a green
+// coverage job that had not looked at a single line of them.
+//
+// Each host's own adapter directory is listed rather than matched by a pattern,
+// so adding a host is a deliberate edit here and a new plugin cannot arrive
+// ungated by accident.
+const GATED_DIRECTORIES = [
+  `${CLAUDE_PLUGIN_ROOT}/src/`,
+  "plugins/copilot/neatcontext/src/copilot/",
+  "plugins/kimi-code/neatcontext/src/kimi/",
+  "plugins/pi/neatcontext/src/pi/",
+  "plugins/pi/neatcontext/extensions/",
+  "codex-marketplace/plugins/neatcontext/src/codex/"
+];
+
+// The Context core is authored once in shared/core and copied verbatim into
+// every plugin, and two separate checks already prove those copies identical:
+// `sync-context-core.mjs --check` fails CI when one drifts, and the host tests
+// assert byte-equality against Claude Code's. Claude's copy is gated above and
+// is the one the unit tests import directly.
+//
+// So gating the other four copies would demand that the same line be executed
+// five times over to prove something already proven by equality. It would add
+// no safety and would fail honest changes. Host-specific code, which is not
+// generated and not identical, is gated everywhere.
+const GENERATED_CORE = /^(plugins|codex-marketplace\/plugins)\/[^/]+\/neatcontext\/src\/core\//;
+
+// Tests are excluded on purpose: a test file is covered by definition, and
+// counting it would only dilute the gate.
 export function isGatedFile(repoRelativePath) {
-  return (
-    repoRelativePath.startsWith(`${CLAUDE_PLUGIN_ROOT}/src/`) &&
-    repoRelativePath.endsWith(".mjs")
-  );
+  if (!/\.(mjs|js)$/.test(repoRelativePath)) {
+    return false;
+  }
+  if (
+    GENERATED_CORE.test(repoRelativePath) &&
+    !repoRelativePath.startsWith(`${CLAUDE_PLUGIN_ROOT}/src/`)
+  ) {
+    return false;
+  }
+  return GATED_DIRECTORIES.some((directory) => repoRelativePath.startsWith(directory));
 }
 
 // --- what changed ------------------------------------------------------------
