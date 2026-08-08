@@ -312,7 +312,7 @@ function routingInstructions(mode) {
 // The absence of a context is information too, so the list says so outright.
 // Left unsaid, a short list reads like the whole store, and a model that cannot
 // find what it wants in it starts reaching for the closest thing there.
-export function renderShortlist(entries, { connectedId, mode } = {}) {
+export function renderShortlist(entries, { connectedId, mode, decision } = {}) {
   if (mode === "manual" || entries.length === 0) {
     return null;
   }
@@ -325,8 +325,31 @@ export function renderShortlist(entries, { connectedId, mode } = {}) {
   lines.push(
     "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — that is a reason to stay where you are, not to reach for the closest one here."
   );
+  const tie = tieNote(decision);
+  if (tie) {
+    lines.push(tie);
+  }
   lines.push(...routingInstructions(mode));
   return lines.join("\n");
+}
+
+// What a near-tie is allowed to do, which is nothing on its own.
+//
+// This overrides auto deliberately. Auto is the mode for "act when it is
+// obvious", and two contexts matching equally well is the definition of not
+// obvious — the one case where switching unasked is most likely to be wrong and
+// least likely to be noticed, because the answer that follows is fluent and
+// sourced and simply about the wrong thing.
+function tieNote(decision) {
+  if (decision?.verdict !== "close") {
+    return null;
+  }
+  const names = decision.leaders.map((leader) => `**${leader.name}**`).join(" and ");
+  return (
+    `${names} match the request about equally well, so which one is right is not something to ` +
+    "decide on the user's behalf. Name them, say in one line what each covers, and ask which — " +
+    "in auto mode too. Switch only once they have answered."
+  );
 }
 
 function matchNote(entry) {
