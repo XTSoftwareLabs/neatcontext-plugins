@@ -28,10 +28,12 @@ import {
   noteDeclined,
   readRouting,
   renderMenu,
+  renderShortlist,
   resolveMode,
   sessionId,
   switchPolicy
 } from "../core/routing.mjs";
+import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
 import { applySelection, resolveContext } from "../core/selection.mjs";
 
 const SERVER_INFO = { name: "neatcontext", version: "0.3.2" };
@@ -61,7 +63,19 @@ const GET_CONTEXT_TOOL = {
     "knowledge folders to search. Call this before answering anything that depends on the " +
     "user's own domain, documents, tools, or team conventions — some hosts do not surface " +
     "this server's initialize instructions, so the tool description is what carries that rule.",
-  inputSchema: { type: "object", properties: {}, additionalProperties: false }
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          "What the user is actually asking about, in their own words. Pass it whenever there " +
+          "is one: it decides which of the contexts on this machine are worth showing you, " +
+          "instead of listing all of them. Leave it out and you get the full list."
+      }
+    },
+    additionalProperties: false
+  }
 };
 // What to say when a session has nothing to ground in. It is deliberately about
 // what to do *here*: every route is a command in this session, and no other
@@ -339,17 +353,60 @@ async function contextResponse(message, context) {
 
 // --- Routing: the session picks its own context ------------------------------
 
-// What the model needs to route: every context that exists, one line each on
-// what it is for, and the rules for acting on that. Rebuilt on demand rather
+// What the model needs to route: the contexts worth considering, one line
+// each on what they are for, and the rules for acting on that. Rebuilt on demand rather
 // than cached, so `/neatcontext:mode` and a context created mid-session both
 // take effect on the next call instead of on the next restart.
-async function routingMenu() {
+// With a request to match against, the menu is the few contexts that matched
+// it; without one it is everything, alphabetically, as it has always been.
+const SHORTLIST_LIMIT = 5;
+const SHORTLIST_MIN_CONTEXTS = 8;
+
+// One index for this process, which outlives the session it was spawned in.
+// That is the point: it is rebuilt when the contexts change, not per question.
+const rankContexts = createRoutingIndex({
+  listFiles: async (record) =>
+    (await listKnowledgeFiles(record.knowledgeFolder, { limit: 60 })).files
+});
+
+async function routingMenu(query) {
   const [{ contexts }, state] = await Promise.all([listAllContexts(), readRouting()]);
   const selection = await readSelection().catch(() => null);
-  return renderMenu(menuEntries(contexts, state), {
+  const options = {
     connectedId: selection?.contextId ?? null,
     mode: resolveMode(state, sessionId())
-  });
+  };
+  const entries = menuEntries(contexts, state);
+  const shortlist = await shortlistFor(contexts, state, entries, query);
+  return shortlist
+    ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
+    : renderMenu(entries, options);
+}
+
+// A shortlist needs three things: a request to match against, enough contexts
+// that narrowing gains anything, and at least one that actually matched. Any of
+// them missing and the full menu goes out instead — a session is never left
+// with less to work with than it has today.
+async function shortlistFor(contexts, state, entries, query) {
+  if (
+    typeof query !== "string" ||
+    query.trim().length === 0 ||
+    entries.length < SHORTLIST_MIN_CONTEXTS
+  ) {
+    return null;
+  }
+  const ranked = await rankContexts(contexts, state, query, { limit: SHORTLIST_LIMIT });
+  if (ranked.length === 0) {
+    return null;
+  }
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  // The score travels with the entry because how far ahead the leader is
+  // decides whether the shortlist names a winner or asks a question.
+  return ranked.map((result) => ({
+    ...byId.get(result.id),
+    matched: result.matched,
+    score: result.score
+  }));
 }
 
 function toolText(id, text, isError = false) {
@@ -571,13 +628,13 @@ async function handleMessage(message) {
 //
 // The connection rule goes last, so it is the closest thing to the answer the
 // session is about to write — and it is the one part that is never omitted.
-async function pluginNotes() {
-  const menu = await routingMenu();
+async function pluginNotes(query) {
+  const menu = await routingMenu(query);
   return menu ? `${menu}\n\n${CONNECTION_RULE}` : CONNECTION_RULE;
 }
 
-async function withNotes(response, place) {
-  const notes = await pluginNotes();
+async function withNotes(response, place, query) {
+  const notes = await pluginNotes(query);
   if (place === "instructions") {
     const existing = response.result.instructions;
     return {
@@ -609,7 +666,9 @@ async function shapeResponse(message, response) {
     return await withRoutingTools(response);
   }
   if (message.method === "tools/call" && message.params?.name === GET_CONTEXT_TOOL.name) {
-    return withNotes(response, "content");
+    // The handshake has no request to match against, so only this path can
+    // narrow the menu — which is also the path that is re-read every turn.
+    return withNotes(response, "content", message.params?.arguments?.query);
   }
   return response;
 }

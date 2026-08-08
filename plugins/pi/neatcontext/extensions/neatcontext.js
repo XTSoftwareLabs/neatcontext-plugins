@@ -43,6 +43,20 @@ import {
 
 const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
 
+const GET_CONTEXT_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description:
+        "What the user is actually asking about, in their own words. Pass it whenever there " +
+        "is one: it decides which of the contexts on this machine are worth showing you, " +
+        "instead of listing all of them. Leave it out and you get the full list."
+    }
+  },
+  additionalProperties: false
+};
+
 function text(value) {
   return { content: [{ type: "text", text: value }], details: undefined };
 }
@@ -142,10 +156,10 @@ export default function (pi) {
     promptSnippet:
       "get_context: the user's own domain knowledge — call before answering anything that " +
       "depends on their systems, documents, or team conventions.",
-    parameters: EMPTY_SCHEMA,
-    async execute(_id, _params, _signal, _onUpdate, ctx) {
+    parameters: GET_CONTEXT_SCHEMA,
+    async execute(_id, params, _signal, _onUpdate, ctx) {
       bindFrom(ctx);
-      return text(await getContext());
+      return text(await getContext(params?.query));
     }
   });
 

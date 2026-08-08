@@ -337,3 +337,66 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     rpc.close();
   }
 });
+
+test("Codex narrows the routing menu to the request", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "neatcontext-codex-shortlist-"));
+  const env = { NEATCONTEXT_HOME: home, CODEX_THREAD_ID: "shortlist-thread" };
+  const corpus = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi plugin", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+  for (const [name, routingDescription] of corpus) {
+    const capturePath = path.join(home, `${name.replace(/\W+/g, "-")}.json`);
+    await writeFile(
+      capturePath,
+      JSON.stringify({
+        schema: 1,
+        name,
+        profile: `# ${name}\n\n## Purpose\n${routingDescription}\n\n## What to do\nAnswer.\n\n## What to avoid\nGuessing.\n\n## Behavior\nBe concise.`,
+        routingDescription,
+        knowledge: [{ path: "session-summary.md", content: `# ${name}\n\n${routingDescription}` }]
+      }),
+      "utf8"
+    );
+    assert.equal((await runNode(cli, ["save", "--from", capturePath, "--consume"], { env })).code, 0);
+  }
+  assert.equal((await runNode(cli, ["use", "Refunds"], { env })).code, 0);
+
+  const session = rpcSession(env);
+  try {
+    await session.call({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } }
+    });
+    const matched = await session.call({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "get_context", arguments: { query: "why is checkout throwing 5xx" } }
+    });
+    const narrowed = matched.result.content[0].text;
+    assert.match(narrowed, /## Contexts that match what the user just asked/);
+    assert.match(narrowed, /INC-1001 checkout/);
+    assert.ok(!narrowed.includes("Docker container"));
+
+    const everything = await session.call({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "get_context", arguments: {} }
+    });
+    assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
+    assert.match(everything.result.content[0].text, /Docker container/);
+  } finally {
+    session.close();
+  }
+});

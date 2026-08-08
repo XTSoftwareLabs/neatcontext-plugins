@@ -76,9 +76,9 @@ async function localHome(prefix) {
   return { directory, knowledge, env: { NEATCONTEXT_HOME: directory } };
 }
 
-async function createLocalContext(home, sessionId, name = "payment team") {
+async function createLocalContext(home, sessionId, name = "payment team", useWhen) {
   const profile = path.join(home.directory, "profile.md");
-  await writeFile(profile, `# ${name}\n\n## Purpose\nPayment support.\n`);
+  await writeFile(profile, `# ${name}\n\n## Purpose\n${useWhen ?? "Payment support."}\n`);
   const result = await runNode(
     cli,
     [
@@ -90,7 +90,8 @@ async function createLocalContext(home, sessionId, name = "payment team") {
       "--knowledge",
       home.knowledge,
       "--profile-from",
-      profile
+      profile,
+      ...(useWhen ? ["--use-when", useWhen] : [])
     ],
     { env: home.env }
   );
@@ -458,4 +459,45 @@ test("Kimi MCP bridge exposes nothing session-dependent until binding", async (t
   assert.match(ungrounded.result.content[0].text, /No NeatContext Context is connected/);
   assert.doesNotMatch(ungrounded.result.content[0].text, /Connected context: payment team/);
 
+});
+
+test("Kimi narrows the routing menu to the request", async (t) => {
+  const home = await localHome("neatcontext-kimi-shortlist-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+    await rm(home.directory, { recursive: true, force: true });
+  });
+
+  const corpus = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi manifests", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+  for (const [name, useWhen] of corpus) {
+    await createLocalContext(home, "kimi-shortlist", name, useWhen);
+  }
+
+  const session = rpcSession(home.env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  await session.call(toolCall(2, "bind_session", { session_id: "kimi-shortlist" }));
+
+  const matched = await session.call(
+    toolCall(3, "get_context", { query: "why is checkout throwing 5xx" })
+  );
+  const narrowed = matched.result.content[0].text;
+  assert.match(narrowed, /## Contexts that match what the user just asked/);
+  assert.match(narrowed, /INC-1001 checkout/);
+  assert.ok(!narrowed.includes("Docker container"));
+
+  const everything = await session.call(toolCall(4, "get_context"));
+  assert.match(everything.result.content[0].text, /## Contexts available on this machine/);
+  assert.match(everything.result.content[0].text, /Docker container/);
 });

@@ -487,3 +487,54 @@ describe("extensions", () => {
     );
   });
 });
+
+describe("narrowing the menu to the request", () => {
+  const CORPUS = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi plugin", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+
+  async function seed() {
+    for (const [name, useWhen] of CORPUS) {
+      await runtime.createContext({
+        name,
+        knowledgeFolder: docs,
+        profile: `# ${name}\n\n## Purpose\n\n${useWhen}\n`,
+        useWhen
+      });
+    }
+  }
+
+  it("shows only the contexts the request reached", async () => {
+    await seed();
+    const notes = await runtime.getContext("why is checkout throwing 5xx");
+    assert.match(notes, /## Contexts that match what the user just asked/);
+    assert.match(notes, /INC-1001 checkout/);
+    assert.ok(!notes.includes("Docker container"));
+  });
+
+  it("keeps the whole menu when there is no request to match", async () => {
+    // pi appends the notes to its system prompt every turn, where there is no
+    // question yet — that path must keep listing everything.
+    await seed();
+    const notes = await runtime.getContext();
+    assert.match(notes, /## Contexts available on this machine/);
+    assert.match(notes, /Docker container/);
+    assert.match(await runtime.sessionInstructions(), /## Contexts available on this machine/);
+  });
+
+  it("keeps the whole menu when nothing matched", async () => {
+    await seed();
+    assert.match(
+      await runtime.getContext("what is the capital of France"),
+      /## Contexts available on this machine/
+    );
+  });
+});
