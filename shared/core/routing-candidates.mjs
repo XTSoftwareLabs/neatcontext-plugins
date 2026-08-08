@@ -68,6 +68,31 @@ export async function routingDocuments(contexts, state, listFiles) {
 // know how a knowledge folder is read — and so the cache can be tested without
 // a disk. It is called only when the index is actually being rebuilt, which is
 // what makes the fingerprint check worth doing.
+// How close the runner-up may come before the shortlist stops naming a winner.
+//
+// The gap between the best candidate and the next one is the only measure of
+// confidence this design has, and it is worth being clear about what it is for:
+// not picking better, but knowing when not to pick at all. Switching to the
+// wrong context re-grounds the session and produces a confident answer out of
+// another team's documents. Asking costs one line. When the two mistakes cost
+// that differently, a near-tie should always become a question.
+//
+// A ratio rather than a difference, because scores have no fixed scale — they
+// move with the size of the store and the rarity of the words in the request.
+// How far ahead the leader is, relative to the field, does not.
+export const CLOSE_RATIO = 0.8;
+
+// `clear` means one candidate stands out and can be acted on. `close` means two
+// or more are within a hair of each other, which is a question for the user
+// rather than a decision for the model — in every mode, including auto.
+export function assess(ranked) {
+  if (ranked.length === 0) {
+    return { verdict: "none", leaders: [] };
+  }
+  const leaders = ranked.filter((candidate) => candidate.score / ranked[0].score > CLOSE_RATIO);
+  return { verdict: leaders.length > 1 ? "close" : "clear", leaders };
+}
+
 export function createRoutingIndex({ listFiles }) {
   let key = null;
   let index = null;

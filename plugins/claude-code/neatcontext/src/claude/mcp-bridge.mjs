@@ -38,7 +38,7 @@ import {
   sessionId,
   switchPolicy
 } from "../core/routing.mjs";
-import { createRoutingIndex } from "../core/routing-candidates.mjs";
+import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
 import { applySelection, resolveContext } from "../core/selection.mjs";
 
 const SERVER_INFO = { name: "neatcontext", version: "0.3.2" };
@@ -327,7 +327,9 @@ async function routingMenu(query) {
   };
   const entries = menuEntries(contexts, state);
   const shortlist = await shortlistFor(contexts, state, entries, query);
-  return shortlist ? renderShortlist(shortlist, options) : renderMenu(entries, options);
+  return shortlist
+    ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
+    : renderMenu(entries, options);
 }
 
 // A shortlist needs three things: a request to match against, enough contexts
@@ -347,7 +349,13 @@ async function shortlistFor(contexts, state, entries, query) {
     return null;
   }
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  return ranked.map((result) => ({ ...byId.get(result.id), matched: result.matched }));
+  // The score travels with the entry because how far ahead the leader is
+  // decides whether the shortlist names a winner or asks a question.
+  return ranked.map((result) => ({
+    ...byId.get(result.id),
+    matched: result.matched,
+    score: result.score
+  }));
 }
 
 function toolText(id, text, isError = false) {
