@@ -34,6 +34,11 @@ const MAX_CAPTURE_FILE_BYTES = 256 * 1024;
 const MAX_CAPTURE_TOTAL_BYTES = 1024 * 1024;
 const MAX_PROFILE_BYTES = 128 * 1024;
 const MAX_ROUTING_DESCRIPTION = 240;
+// Matching material rather than reading material: none of this is ever shown to
+// a session, so the limits are about keeping a bundle sane, not a prompt short.
+const MAX_ROUTING_QUESTIONS = 20;
+const MAX_ROUTING_ENTITIES = 40;
+const MAX_ROUTING_TERM = 200;
 const UPDATE_LOCK_STALE_MS = 60_000;
 const SKIPPED_DIRECTORIES = new Set(["node_modules", ".git", ".svn", ".hg", "__pycache__"]);
 
@@ -100,6 +105,11 @@ function recordFor(directory, parsed) {
     conversationKnowledgeFolder: knowledgeManaged ? null : path.join(directory, "knowledge"),
     routingDescription:
       typeof parsed.routingDescription === "string" ? parsed.routingDescription : "",
+    // Index-only matching material. It travels with the bundle so a teammate's
+    // copy is findable by the same words as yours, which is the whole reason it
+    // lives here rather than in this machine's routing cache.
+    routingQuestions: normalizeRoutingList(parsed.routingQuestions, MAX_ROUTING_QUESTIONS),
+    routingEntities: normalizeRoutingList(parsed.routingEntities, MAX_ROUTING_ENTITIES),
     // What this context expects to be able to reach. Read leniently: a
     // declaration this plugin cannot make sense of is dropped rather than
     // allowed to hide the profile and knowledge behind it.
@@ -294,6 +304,35 @@ export async function createContext({ name, knowledgeFolder, profile, extensions
   };
 }
 
+// The questions a context should catch, and the names that appear in it.
+//
+// A description answers "what is this?", which is not how anyone searches. They
+// search with the words of their problem, so these hold the other vocabulary:
+// the phrasings a user would actually type, and the service names, ticket ids
+// and error strings that appear in one context and nowhere else. Both are
+// matched against and neither is ever displayed, which is what makes them cheap
+// enough to keep in bulk.
+//
+// Optional, unlike the description. A bundle written before this existed, or by
+// a host that does not generate them, is not broken — it just matches on less.
+function normalizeRoutingList(value, limit) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const kept = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const clean = entry.trim().replace(/\s+/g, " ").slice(0, MAX_ROUTING_TERM);
+    const key = clean.toLowerCase();
+    if (clean.length === 0 || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(clean);
+    if (kept.length === limit) break;
+  }
+  return kept;
+}
+
 function normalizeRoutingDescription(value) {
   const description = (value ?? "").trim().replace(/\s+/g, " ");
   if (description.length === 0) {
@@ -392,6 +431,8 @@ export async function createCapturedContext({
   name,
   profile,
   routingDescription,
+  routingQuestions,
+  routingEntities,
   knowledge,
   extensions,
   capturedFrom = "conversation"
@@ -399,6 +440,8 @@ export async function createCapturedContext({
   const cleanName = normalizeName(name);
   const profileText = normalizeProfile(profile);
   const useWhen = normalizeRoutingDescription(routingDescription);
+  const questions = normalizeRoutingList(routingQuestions, MAX_ROUTING_QUESTIONS);
+  const entities = normalizeRoutingList(routingEntities, MAX_ROUTING_ENTITIES);
   const files = normalizeCaptureKnowledge(knowledge);
   const declarations = serializeExtensionDeclarations(extensions ?? []);
   await ensureUniqueName(cleanName);
@@ -416,6 +459,10 @@ export async function createCapturedContext({
     capturedFrom: isConversationCapture(capturedFrom) ? capturedFrom : "conversation",
     routingDescription: useWhen
   };
+  // Absent rather than empty when there is nothing: a manifest should not carry
+  // a field that says only that a host did not fill it in.
+  if (questions.length > 0) record.routingQuestions = questions;
+  if (entities.length > 0) record.routingEntities = entities;
   if (declarations) record.extensions = declarations;
   record.updatedAt = record.createdAt;
 
@@ -540,6 +587,8 @@ async function prepareCapturedContextUpdate({
   name,
   profile,
   routingDescription,
+  routingQuestions,
+  routingEntities,
   knowledge,
   extensions
 }) {
@@ -560,6 +609,17 @@ async function prepareCapturedContextUpdate({
   requireCurrentBase(record, currentHash, baseHash);
   const profileText = normalizeProfile(profile);
   const useWhen = normalizeRoutingDescription(routingDescription);
+  // Same rule as extensions below: a save that says nothing about the matching
+  // material leaves what is there alone. A host that does not generate these
+  // must not silently strip what another host wrote.
+  const questions =
+    routingQuestions === undefined
+      ? record.routingQuestions
+      : normalizeRoutingList(routingQuestions, MAX_ROUTING_QUESTIONS);
+  const entities =
+    routingEntities === undefined
+      ? record.routingEntities
+      : normalizeRoutingList(routingEntities, MAX_ROUTING_ENTITIES);
   const files = normalizeCaptureKnowledge(knowledge);
   // A save that says nothing about extensions leaves them exactly as they are.
   // Declarations are usually added deliberately, by hand or by `extensions add`,
@@ -569,13 +629,18 @@ async function prepareCapturedContextUpdate({
   const currentKnowledge = await readGeneratedKnowledge(record);
   const changes = knowledgeChanges(currentKnowledge, files);
   const profileChanged = (await readProfileText(record)) !== profileText;
-  const routingChanged = record.routingDescription !== useWhen;
+  const routingChanged =
+    record.routingDescription !== useWhen ||
+    JSON.stringify(record.routingQuestions) !== JSON.stringify(questions) ||
+    JSON.stringify(record.routingEntities) !== JSON.stringify(entities);
   const extensionsChanged =
     JSON.stringify(record.extensions) !== JSON.stringify(declarations);
   return {
     record,
     profileText,
     useWhen,
+    questions,
+    entities,
     files,
     declarations,
     changes,
@@ -681,6 +746,8 @@ export async function updateCapturedContext(capture) {
       revision: prepared.record.revision + 1,
       routingDescription: prepared.useWhen,
       extensions: serializeExtensionDeclarations(prepared.declarations),
+      routingQuestions: prepared.questions,
+      routingEntities: prepared.entities,
       updatedFrom:
         typeof capture.updatedFrom === "string" && capture.updatedFrom.trim().length > 0
           ? capture.updatedFrom.trim()
@@ -798,6 +865,10 @@ export async function importCapturedContext({ bundleFolder, name }) {
     name: typeof name === "string" && name.trim().length > 0 ? name : manifest.name,
     profile,
     routingDescription: manifest.routingDescription,
+    // The point of keeping these in the bundle: a teammate's copy is findable
+    // by the same words as the original, without them rediscovering any of it.
+    routingQuestions: manifest.routingQuestions,
+    routingEntities: manifest.routingEntities,
     knowledge,
     // What the bundle says it expects to reach, reduced to declarations. The
     // import creates no binding for any of them, so the imported context arrives
