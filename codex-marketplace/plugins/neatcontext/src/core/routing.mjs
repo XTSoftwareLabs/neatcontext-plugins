@@ -47,6 +47,24 @@ const MAX_ALIASES = 12;
 const MAX_DECISIONS = 100;
 const MAX_SESSIONS = 20;
 
+// How long a refusal keeps counting for.
+//
+// "Not that one" is true tomorrow as well, so forgetting it when the window
+// closes throws away the clearest signal the user ever gives. But it is
+// evidence, not a rule: a context refused during one week's work should not be
+// unreachable a quarter later. So it fades — half its strength every two weeks,
+// negligible by six — and refusing the same context again resets the clock and
+// deepens it, which is the escalation a browser uses for a permission prompt
+// dismissed several times over. Once is noise; three times is an answer.
+//
+// Nothing here ever becomes permanent. The only permanent no in this plugin is
+// manual mode, because that one is a decision the user made on purpose.
+const DECLINE_HALF_LIFE_DAYS = 14;
+const DECLINE_LIFETIME_DAYS = 42;
+const DECLINE_WEIGHT = 0.4;
+const MAX_DECLINE_COUNT = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export function routingFilePath() {
   return path.join(neatContextHome(), "plugin-routing.json");
 }
@@ -85,8 +103,15 @@ export async function readRouting() {
       cards[id] = card;
     }
   }
+  const declines = {};
+  for (const [id, raw] of Object.entries(parsed?.declines ?? {})) {
+    if (typeof raw?.at === "string" && Number.isInteger(raw.count) && raw.count > 0) {
+      declines[id] = { at: raw.at, count: Math.min(raw.count, MAX_DECLINE_COUNT) };
+    }
+  }
   return {
     schema: SCHEMA,
+    declines,
     mode: MODES.includes(parsed?.mode) ? parsed.mode : DEFAULT_MODE,
     cards,
     sessions: typeof parsed?.sessions === "object" && parsed.sessions !== null ? parsed.sessions : {},
@@ -103,7 +128,16 @@ async function writeRouting(state) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(
     file,
-    `${JSON.stringify({ ...state, sessions: Object.fromEntries(sessions), decisions: state.decisions.slice(-MAX_DECISIONS) }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        ...state,
+        sessions: Object.fromEntries(sessions),
+        declines: pruneDeclines(state.declines, Date.now()),
+        decisions: state.decisions.slice(-MAX_DECISIONS)
+      },
+      null,
+      2
+    )}\n`,
     { encoding: "utf8", mode: 0o600 }
   );
 }
@@ -226,20 +260,64 @@ export function switchPolicy(state, { id, targetId, connectedId, requested = fal
 
 // Remembering a refusal is what stops auto mode from proposing the same wrong
 // context on every message that shares a word with it.
-export function noteDeclined(targetId, { id = sessionId() } = {}) {
-  if (!id) {
-    return Promise.resolve(null);
-  }
+//
+// Two records, because a refusal means two different things. Inside the session
+// it is absolute — that context is not raised again, full stop. Outside it, it
+// is evidence that fades: the same request should still reach the same context
+// eventually, just not today and not without something better to go on.
+export function noteDeclined(targetId, { id = sessionId(), now = new Date() } = {}) {
   return update((state) => {
-    const session = state.sessions[id] ?? {};
-    const declined = session.declined ?? [];
-    state.sessions[id] = {
-      ...session,
-      declined: declined.includes(targetId) ? declined : [...declined, targetId],
-      updatedAt: new Date().toISOString()
+    const previous = state.declines[targetId];
+    state.declines[targetId] = {
+      at: now.toISOString(),
+      // Repeating a refusal restarts the clock and deepens it, rather than
+      // simply re-stating what was already known.
+      count: Math.min((previous?.count ?? 0) + 1, MAX_DECLINE_COUNT)
     };
+    if (id) {
+      const session = state.sessions[id] ?? {};
+      const declined = session.declined ?? [];
+      state.sessions[id] = {
+        ...session,
+        declined: declined.includes(targetId) ? declined : [...declined, targetId],
+        updatedAt: now.toISOString()
+      };
+    }
     return targetId;
   });
+}
+
+// What a past refusal does to a context's score now: a multiplier in (0, 1],
+// where 1 means it is not holding anything back.
+//
+// Strength halves every two weeks, so a fresh single refusal costs a candidate
+// most of its lead and a six-week-old one costs it almost nothing. Repeats
+// compound rather than add, which keeps the result inside the range however
+// many there have been.
+export function declineFactor(state, contextId, now = new Date()) {
+  const entry = state.declines?.[contextId];
+  if (!entry) {
+    return 1;
+  }
+  const days = (now.getTime() - Date.parse(entry.at)) / DAY_MS;
+  if (!Number.isFinite(days) || days >= DECLINE_LIFETIME_DAYS) {
+    return 1;
+  }
+  const strength = DECLINE_WEIGHT * 0.5 ** (Math.max(days, 0) / DECLINE_HALF_LIFE_DAYS);
+  return (1 - strength) ** entry.count;
+}
+
+// Dropped once it can no longer change an outcome, so the file does not
+// accumulate a record of every context ever turned down.
+function pruneDeclines(declines, now) {
+  const kept = {};
+  for (const [id, entry] of Object.entries(declines)) {
+    const days = (now - Date.parse(entry.at)) / DAY_MS;
+    if (Number.isFinite(days) && days < DECLINE_LIFETIME_DAYS) {
+      kept[id] = entry;
+    }
+  }
+  return kept;
 }
 
 // Every switch, with what it was routing away from and why. Thresholds and card

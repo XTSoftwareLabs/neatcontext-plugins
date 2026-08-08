@@ -18,6 +18,7 @@
 // has in hand — a context's revision and timestamps, a card's timestamp — so
 // checking costs no extra reads. Only a real change pays for a rebuild.
 
+import { declineFactor } from "./routing.mjs";
 import { buildIndex, rank } from "./routing-search.mjs";
 
 // The fields, in the shape the scorer weighs. Aliases are joined into one
@@ -107,11 +108,20 @@ export function createRoutingIndex({ listFiles }) {
       key = next;
     }
     const names = new Map(contexts.map((context) => [context.id, context.name]));
-    return rank(index, query, options).map((result) => ({
-      id: result.id,
-      name: names.get(result.id),
-      score: result.score,
-      matched: result.matched
-    }));
+    const now = new Date();
+    // Past refusals are applied after ranking rather than folded into the
+    // index: they change on their own schedule, and rebuilding the index every
+    // time someone says no would throw away the cache for a multiplier.
+    //
+    // Re-sorted afterwards because a discount can change the order, and the
+    // shortlist's whole meaning is that it is in order.
+    return rank(index, query, options)
+      .map((result) => ({
+        id: result.id,
+        name: names.get(result.id),
+        score: result.score * declineFactor(state, result.id, now),
+        matched: result.matched
+      }))
+      .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
   };
 }
