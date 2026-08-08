@@ -24,9 +24,10 @@ import { buildIndex, rank } from "./routing-search.mjs";
 // string rather than kept as a list because the scorer counts words, and a
 // user who wrote two aliases meant both of them.
 //
-// `entities` and `questions` are missing on purpose: nothing generates them
-// yet. The scorer treats an absent field as absent rather than empty, so adding
-// them later changes what matches without changing anything here.
+// `questions` and `entities` come from the bundle rather than from this
+// machine, which is what makes a context findable by the same words on every
+// machine it reaches. They are matched against and never displayed, so their
+// size costs nothing in the prompt.
 export function routingFields(context, card, files) {
   return {
     name: context.name ?? "",
@@ -35,6 +36,8 @@ export function routingFields(context, card, files) {
     // that travelled with the bundle.
     description: card?.useWhen || context.routingDescription || "",
     aliases: (card?.aliases ?? []).join(" "),
+    questions: (context.routingQuestions ?? []).join(" "),
+    entities: (context.routingEntities ?? []).join(" "),
     files: files.join(" ")
   };
 }

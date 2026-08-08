@@ -93,7 +93,14 @@ describe("routingFields", () => {
 
   it("survives a context with nothing but a name", () => {
     const fields = routingFields({ id: "bare" }, undefined, []);
-    assert.deepEqual(fields, { name: "", description: "", aliases: "", files: "" });
+    assert.deepEqual(fields, {
+      name: "",
+      description: "",
+      aliases: "",
+      questions: "",
+      entities: "",
+      files: ""
+    });
   });
 });
 
