@@ -18,7 +18,7 @@
 // has in hand — a context's revision and timestamps, a card's timestamp — so
 // checking costs no extra reads. Only a real change pays for a rebuild.
 
-import { declineFactor } from "./routing.mjs";
+import { declineFactor, familiarity } from "./routing.mjs";
 import { buildIndex, rank } from "./routing-search.mjs";
 
 // The fields, in the shape the scorer weighs. Aliases are joined into one
@@ -101,14 +101,15 @@ export function createRoutingIndex({ listFiles }) {
   let key = null;
   let index = null;
 
-  return async function candidates(contexts, state, query, options) {
+  return async function candidates(contexts, state, query, options = {}) {
     const next = fingerprint(contexts, state);
     if (next !== key || index === null) {
       index = buildIndex(await routingDocuments(contexts, state, listFiles));
       key = next;
     }
-    const names = new Map(contexts.map((context) => [context.id, context.name]));
+    const byId = new Map(contexts.map((context) => [context.id, context]));
     const now = new Date();
+    const { connectedId = null } = options;
     // Past refusals are applied after ranking rather than folded into the
     // index: they change on their own schedule, and rebuilding the index every
     // time someone says no would throw away the cache for a multiplier.
@@ -116,12 +117,18 @@ export function createRoutingIndex({ listFiles }) {
     // Re-sorted afterwards because a discount can change the order, and the
     // shortlist's whole meaning is that it is in order.
     return rank(index, query, options)
-      .map((result) => ({
-        id: result.id,
-        name: names.get(result.id),
-        score: result.score * declineFactor(state, result.id, now),
-        matched: result.matched
-      }))
+      .map((result) => {
+        const context = byId.get(result.id);
+        return {
+          id: result.id,
+          name: context.name,
+          score:
+            result.score *
+            declineFactor(state, result.id, now) *
+            familiarity(state, context, { connectedId, now }),
+          matched: result.matched
+        };
+      })
       .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
   };
 }

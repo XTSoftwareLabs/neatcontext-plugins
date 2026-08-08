@@ -326,7 +326,7 @@ async function routingMenu(query) {
     mode: resolveMode(state, sessionId())
   };
   const entries = menuEntries(contexts, state);
-  const shortlist = await shortlistFor(contexts, state, entries, query);
+  const shortlist = await shortlistFor(contexts, state, entries, query, options.connectedId);
   return shortlist
     ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
     : renderMenu(entries, options);
@@ -336,7 +336,7 @@ async function routingMenu(query) {
 // that narrowing gains anything, and at least one that actually matched. Any of
 // them missing and the full menu goes out instead — a session is never left
 // with less to work with than it has today.
-async function shortlistFor(contexts, state, entries, query) {
+async function shortlistFor(contexts, state, entries, query, connectedId) {
   if (
     typeof query !== "string" ||
     query.trim().length === 0 ||
@@ -344,7 +344,10 @@ async function shortlistFor(contexts, state, entries, query) {
   ) {
     return null;
   }
-  const ranked = await rankContexts(contexts, state, query, { limit: SHORTLIST_LIMIT });
+  const ranked = await rankContexts(contexts, state, query, {
+    limit: SHORTLIST_LIMIT,
+    connectedId
+  });
   if (ranked.length === 0) {
     return null;
   }
