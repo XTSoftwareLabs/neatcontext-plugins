@@ -74,10 +74,23 @@ symptoms, ticket prefixes, and terminology someone would actually type. Never
 include behavioral or formatting instructions: that line is read while *other*
 contexts are connected.
 
+Also derive two lists that are matched against and never shown. They are what
+lets someone find this context when they have forgotten it exists.
+
+- `routingQuestions` — 10 to 15 questions this context should answer, written
+  the way the user would type them rather than the way the profile describes
+  them. Include the vague ones ("did we ever fix that timeout thing").
+- `routingEntities` — names that appear in this work and rarely anywhere else:
+  services, repos, ticket ids, error strings, commands, hosts, people.
+
+Nothing reads either list aloud, so prefer coverage over polish. On an update,
+omit both fields to leave the stored lists untouched; supply them only when the
+work has added vocabulary the context should now be found by.
+
 ## Apply
 
 For a new context, call `neatcontext_save` with `name`, `profile`,
-`routingDescription`, and `knowledge`. It is created immediately.
+`routingDescription`, `routingQuestions`, `routingEntities`, and `knowledge`. It is created immediately.
 
 For an update, call it with `targetId`, `baseHash`, `profile`,
 `routingDescription`, and `knowledge`. That returns a preview and changes

@@ -15,6 +15,7 @@ let home;
 let docs;
 let runtime;
 let session;
+let store;
 
 before(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "neatcontext-pi-test-"));
@@ -28,6 +29,7 @@ before(async () => {
   // inside the temporary home.
   runtime = await import("../src/pi/runtime.mjs");
   session = await import("../src/pi/session.mjs");
+  store = await import("../src/core/context-store.mjs");
 });
 
 after(async () => {
@@ -536,5 +538,50 @@ describe("narrowing the menu to the request", () => {
       await runtime.getContext("what is the capital of France"),
       /## Contexts available on this machine/
     );
+  });
+});
+
+describe("saving the matching material", () => {
+  const BASE = {
+    name: "Pool limits June",
+    profile: "# Pool limits June\n\n## Purpose\n\nThe June regression.\n",
+    routingDescription: "billing-postgres default_pool_size regression after the June deploy",
+    knowledge: [{ path: "session-summary.md", content: "# Summary\n\nPool exhaustion.\n" }]
+  };
+
+  it("stores the questions and entities a save supplies", async () => {
+    await runtime.saveContext({
+      ...BASE,
+      routingQuestions: ["why was checkout throwing 5xx last week"],
+      routingEntities: ["INC-1001", "checkout-api"]
+    });
+    const stored = (await store.listContexts()).find((entry) => entry.name === "Pool limits June");
+    assert.deepEqual(stored.routingQuestions, ["why was checkout throwing 5xx last week"]);
+    assert.deepEqual(stored.routingEntities, ["INC-1001", "checkout-api"]);
+  });
+
+  it("leaves stored lists alone when a save says nothing about them", async () => {
+    // pi may save from a turn that never generated them; that must not wipe
+    // what an earlier save wrote.
+    await runtime.saveContext({
+      ...BASE,
+      routingQuestions: ["why was checkout throwing 5xx last week"],
+      routingEntities: ["INC-1001"]
+    });
+    const before = (await store.listContexts()).find((entry) => entry.name === "Pool limits June");
+
+    await runtime.saveContext({
+      name: before.name,
+      targetId: before.id,
+      baseHash: await store.fingerprintContext(before),
+      profile: "# Pool limits June\n\n## Purpose\n\nThe June regression, revisited.\n",
+      routingDescription: BASE.routingDescription,
+      knowledge: BASE.knowledge,
+      confirm: true
+    });
+
+    const after = (await store.listContexts()).find((entry) => entry.name === "Pool limits June");
+    assert.deepEqual(after.routingQuestions, before.routingQuestions);
+    assert.deepEqual(after.routingEntities, before.routingEntities);
   });
 });

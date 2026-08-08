@@ -114,6 +114,19 @@ says only which future requests belong here, naming systems, repos, components,
 ticket prefixes, symptoms, and terminology someone would type. Do not put
 behavioral, tone, or answer-format instructions in this line.
 
+Also derive two lists that are matched against and never shown. They are what
+lets someone find this context when they have forgotten it exists.
+
+- `routingQuestions` — 10 to 15 questions this context should answer, written
+  the way the user would type them rather than the way the profile describes
+  them. Include the vague ones ("did we ever fix that timeout thing").
+- `routingEntities` — names that appear in this work and rarely anywhere else:
+  services, repos, ticket ids, error strings, commands, hosts, people.
+
+Nothing reads either list aloud, so prefer coverage over polish. On an update,
+omit both fields to leave the stored lists untouched; supply them only when the
+work has added vocabulary the context should now be found by.
+
 ## Write the capture
 
 Write one valid JSON file, with no surrounding code fence, to a uniquely named
@@ -134,6 +147,8 @@ For a new context, use exactly this shape:
   "name": "Short specific name",
   "profile": "# Short specific name\n\n## Purpose\n...",
   "routingDescription": "One line describing only the matching scope",
+  "routingQuestions": ["why was checkout throwing 5xx last week", "..."],
+  "routingEntities": ["INC-1001", "checkout-api", "pgbouncer"],
   "knowledge": [
     {
       "path": "session-summary.md",
@@ -153,6 +168,8 @@ For an update, add the exact target values printed by `save-target`:
   "baseHash": "exact base hash",
   "profile": "# Exact existing context name\n\n## Purpose\n...",
   "routingDescription": "One line describing only the matching scope",
+  "routingQuestions": ["why was checkout throwing 5xx last week", "..."],
+  "routingEntities": ["INC-1001", "checkout-api", "pgbouncer"],
   "knowledge": [
     {
       "path": "session-summary.md",

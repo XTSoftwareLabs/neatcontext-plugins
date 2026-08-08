@@ -273,6 +273,22 @@ export default function (pi) {
           type: "string",
           description: "One line of scope, under 200 characters. Scope only, never behavior."
         },
+        routingQuestions: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "10-15 questions this context should catch, in the words a user would type " +
+            "rather than the words the profile uses. Matched against, never shown. Omit on " +
+            "an update to leave the stored list alone."
+        },
+        routingEntities: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Names that appear in this work and rarely elsewhere: services, repos, ticket " +
+            "ids, error strings, commands, hosts. Matched against, never shown. Omit on an " +
+            "update to leave the stored list alone."
+        },
         knowledge: {
           type: "array",
           description:
