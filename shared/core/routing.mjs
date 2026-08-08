@@ -59,6 +59,31 @@ const MAX_SESSIONS = 20;
 //
 // Nothing here ever becomes permanent. The only permanent no in this plugin is
 // manual mode, because that one is a decision the user made on purpose.
+// How much a context you actually use is worth.
+//
+// The same idea a browser address bar runs on: you type two letters and it
+// offers the site you open daily, not the one you opened once last year. It
+// solves the same problem routing has — many items, a short vague request, and
+// one chance to be right.
+//
+// Deliberately a small thumb on the scale rather than a decision. What you used
+// last week is a hint about what you mean; it is not evidence about what you
+// asked, and it must never outrank the words.
+const FRECENCY_HALF_LIFE_DAYS = 14;
+const FRECENCY_MAX_BOOST = 1.25;
+
+// And how much the context you are already on is worth.
+//
+// Most requests continue the last one, so leaving is the unusual move and
+// should need more evidence than staying. Handing the session to a context that
+// is barely ahead is how a conversation ends up flipping between two of them.
+//
+// This is hysteresis, and it needs no new machinery: inflating the incumbent's
+// score means a challenger has to clear it by a real margin, and one that only
+// just clears it lands inside the near-tie rule and becomes a question instead
+// of a switch.
+const STICKY_BOOST = 1.35;
+
 const DECLINE_HALF_LIFE_DAYS = 14;
 const DECLINE_LIFETIME_DAYS = 42;
 const DECLINE_WEIGHT = 0.4;
@@ -305,6 +330,33 @@ export function declineFactor(state, contextId, now = new Date()) {
   }
   const strength = DECLINE_WEIGHT * 0.5 ** (Math.max(days, 0) / DECLINE_HALF_LIFE_DAYS);
   return (1 - strength) ** entry.count;
+}
+
+// How much this machine's own history argues for a context: a multiplier at or
+// above 1, never below, because this is a hint and not evidence.
+//
+// Both halves are personal. They read what this machine has done and change
+// nothing in the bundle, so a context stays exactly as portable as it was — two
+// people will simply reach it in a slightly different order, which is the
+// honest answer when one of them lives in it and the other has never opened it.
+//
+// Matched on name rather than id because that is what the decision log records.
+// Names are unique in a store, so this is exact; renaming a context forgets its
+// history, which for a hint of this size is a fair trade against threading an
+// id through five hosts' bridges.
+export function familiarity(state, context, { connectedId = null, now = new Date() } = {}) {
+  const sticky = context.id === connectedId ? STICKY_BOOST : 1;
+  let weight = 0;
+  for (const decision of state.decisions ?? []) {
+    if (decision?.to !== context.name) continue;
+    const days = (now.getTime() - Date.parse(decision.at)) / DAY_MS;
+    if (!Number.isFinite(days) || days < 0) continue;
+    weight += 0.5 ** (days / FRECENCY_HALF_LIFE_DAYS);
+  }
+  // Saturating, so a context used fifty times cannot run away with the ranking
+  // and no pass over the whole corpus is needed to normalise anything.
+  const used = 1 + (FRECENCY_MAX_BOOST - 1) * (weight / (weight + 1));
+  return sticky * used;
 }
 
 // Dropped once it can no longer change an outcome, so the file does not
