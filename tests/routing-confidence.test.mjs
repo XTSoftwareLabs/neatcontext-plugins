@@ -141,6 +141,23 @@ describe("assess", () => {
   });
 });
 
+describe("the default mode", () => {
+  it("is auto, because asking is now the route's decision and not the dial's", async () => {
+    // Auto only became safe once a near-tie asks on its own. Before that, "ask
+    // first" was the only safety net there was and had to be on for everybody.
+    const state = await routing.readRouting();
+    assert.equal(routing.DEFAULT_MODE, "auto");
+    assert.equal(routing.resolveMode(state, "session-with-no-preference"), "auto");
+  });
+
+  it("still lets a session choose ask or manual for itself", async () => {
+    await routing.setMode("ask", { id: "picky-session" });
+    const state = await routing.readRouting();
+    assert.equal(routing.resolveMode(state, "picky-session"), "ask");
+    assert.equal(routing.resolveMode(state, "another-session"), "auto");
+  });
+});
+
 describe("renderShortlist with a decision", () => {
   const entries = [
     { id: "a", name: "Codex plugin", useWhen: "packaging", aliases: [], score: 10 },

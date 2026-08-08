@@ -233,6 +233,9 @@ describe("session routing", () => {
     await create("Payments", "payment failures");
     await create("Orders", "order fulfillment");
     await cli(["use", "Payments"], "routing-bridge");
+    // Set explicitly rather than assumed, so this keeps testing ask mode
+    // whatever the default becomes.
+    await cli(["mode", "ask"], "routing-bridge");
     const session = bridge();
     try {
       await session.send("initialize", { protocolVersion: "2025-11-25" });
@@ -274,5 +277,13 @@ describe("session routing", () => {
     } finally {
       await session.close();
     }
+  });
+
+  it("tells the user which mode is the default and what each one does", async () => {
+    const help = await cli(["mode"], "mode-help-session");
+    assert.match(help, /Context routing is auto \(the default\)/);
+    assert.match(help, /auto {4}switch context on a clear match.*\(default\)/);
+    assert.match(help, /ask {5}always ask before switching$/m);
+    assert.match(help, /manual {2}never route/);
   });
 });

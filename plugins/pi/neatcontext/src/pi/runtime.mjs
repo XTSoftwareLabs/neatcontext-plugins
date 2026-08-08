@@ -559,8 +559,8 @@ export async function commandMode(query = "", { global: isGlobal = false } = {})
     return [
       `Context routing is ${active} (${scope}).`,
       "",
-      "  auto    switch context on a clear match, and say so; ask when it is a close call",
-      "  ask     always ask before switching (default)",
+      "  auto    switch context on a clear match, and say so; ask when it is a close call (default)",
+      "  ask     always ask before switching",
       "  manual  never route — /neatcontext-use only",
       "",
       `Change it with \`/neatcontext-mode <${MODES.join("|")}>\`.`

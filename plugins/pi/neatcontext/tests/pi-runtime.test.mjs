@@ -155,9 +155,9 @@ describe("local Contexts", () => {
 
 describe("routing", () => {
   it("reports and changes the mode for this session", async () => {
-    assert.match(await runtime.commandMode(), /Context routing is ask \(the default\)/);
-    assert.match(await runtime.commandMode("auto"), /now auto for this session/);
-    assert.match(await runtime.commandMode(), /Context routing is auto \(this session\)/);
+    assert.match(await runtime.commandMode(), /Context routing is auto \(the default\)/);
+    assert.match(await runtime.commandMode("ask"), /now ask for this session/);
+    assert.match(await runtime.commandMode(), /Context routing is ask \(this session\)/);
     assert.match(await runtime.commandMode("sideways"), /is not a mode/);
   });
 
@@ -179,6 +179,9 @@ describe("routing", () => {
     await createOrders();
     await createOrders("Billing");
     await runtime.commandUse("Orders");
+    // Set explicitly rather than assumed, so this keeps testing ask mode
+    // whatever the default becomes.
+    await runtime.commandMode("ask");
 
     assert.match(await runtime.useContext({ context: "Billing" }), /ask mode, so nothing has changed/);
     assert.match(await runtime.commandStatus(), /Connected context: Orders/);

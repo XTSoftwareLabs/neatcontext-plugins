@@ -334,7 +334,7 @@ test("Kimi CLI requires a safe session id and isolates routing and selection", a
   const currentA = await runNode(cli, ["--session-id=kimi-session-a", "mode"], { env });
   assert.match(currentA.stdout, /auto \(this session\)/);
   const currentB = await runNode(cli, ["--session-id", "kimi-session-b", "mode"], { env });
-  assert.match(currentB.stdout, /ask \(the default\)/);
+  assert.match(currentB.stdout, /auto \(the default\)/);
 
   await createLocalContext(home, "kimi-session-a");
 
