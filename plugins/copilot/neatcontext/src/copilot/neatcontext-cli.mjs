@@ -458,8 +458,8 @@ async function commandMode(query, flags) {
     const scope = MODES.includes(routing.sessions[id]?.mode) ? "this session" : "the default";
     print(`Context routing is ${active} (${scope}).`);
     print("");
-    print("  auto    switch context on a clear match, and say so; ask when it is a close call");
-    print("  ask     always ask before switching (default)");
+    print("  auto    switch context on a clear match, and say so; ask when it is a close call (default)");
+    print("  ask     always ask before switching");
     print("  manual  never route — /neatcontext:use only");
     print("");
     print(`Change it with \`/neatcontext:mode <${MODES.join("|")}>\`.`);

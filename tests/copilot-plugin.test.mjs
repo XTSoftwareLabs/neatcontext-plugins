@@ -454,7 +454,7 @@ test("Copilot CLI serves local Contexts", async (t) => {
 
   const status = await runNode(cli, ["status"], { env });
   assert.match(status.stdout, /Connected context: copilot docs/);
-  assert.match(status.stdout, /Context routing: ask/);
+  assert.match(status.stdout, /Context routing: auto/);
 
   const saveTarget = await runNode(cli, ["save-target"], { env });
   assert.match(saveTarget.stdout, /Save action: update/);
@@ -497,7 +497,7 @@ test("Copilot sessions scope to the workspace when no session id is provided", a
   const modeA = await runNode(cli, ["mode", "auto"], { env: wsEnv, cwd: workspaceA });
   assert.match(modeA.stdout, /now auto for this session/);
   const modeB = await runNode(cli, ["mode"], { env: wsEnv, cwd: workspaceB });
-  assert.match(modeB.stdout, /ask \(the default\)/);
+  assert.match(modeB.stdout, /auto \(the default\)/);
 });
 
 test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
@@ -531,7 +531,9 @@ test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
   // A context exists here, so `use` is a real option and leads.
   assert.match(empty.result.content[0].text, /\/neatcontext:use/);
 
-  // Ask mode is the default: the switch must be refused until requested.
+  // Ask mode refuses an unrequested switch. It is set explicitly rather than
+  // assumed, so this keeps testing ask mode whatever the default becomes.
+  await runNode(cli, ["mode", "ask"], { env });
   const refused = await session.call(
     toolCall(4, "use_context", { context: "bridge target", reason: "test" })
   );

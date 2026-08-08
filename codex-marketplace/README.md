@@ -181,8 +181,9 @@ is deleted with it.
 
 Choose how the current thread switches between contexts:
 
-- `ask` — ask before switching; this is the default
-- `auto` — switch on a clear match and tell you; ask when the choice is unclear
+- `auto` — switch on a clear match and tell you; ask when the choice is unclear;
+  this is the default
+- `ask` — ask before every switch, clear match or not
 - `manual` — switch only when you invoke `$neatcontext:use`
 
 Invoke `$neatcontext:mode` without an argument to show the current mode. Add

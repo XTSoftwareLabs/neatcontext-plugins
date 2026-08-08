@@ -151,7 +151,7 @@ test("Codex CLI isolates routing by CODEX_THREAD_ID", async () => {
   const other = await runNode(cli, ["mode"], {
     env: { ...env, CODEX_THREAD_ID: "thread-b" }
   });
-  assert.match(other.stdout, /Context routing is ask \(the default\)/);
+  assert.match(other.stdout, /Context routing is auto \(the default\)/);
 });
 
 test("Codex saves conversation provenance without touching a transcript", async () => {

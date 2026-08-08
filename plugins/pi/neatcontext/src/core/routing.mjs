@@ -31,7 +31,15 @@ import { sessionId } from "./session.mjs";
 export { sessionId };
 
 export const MODES = ["auto", "ask", "manual"];
-export const DEFAULT_MODE = "ask";
+
+// Auto, because asking is now something a route decides rather than something
+// the mode does. When there is no way to tell an obvious match from a coin
+// flip, "ask first" is the only safety net available and has to be on for
+// everyone — including the nine times in ten the answer is plain. Once the
+// shortlist can see how far ahead the leader is, the net moves into the
+// decision: a clear match switches, a near-tie asks, nothing matching stays put.
+// Asking every time then costs a question per turn and buys nothing.
+export const DEFAULT_MODE = "auto";
 
 const SCHEMA = 1;
 const MAX_USE_WHEN = 240;
