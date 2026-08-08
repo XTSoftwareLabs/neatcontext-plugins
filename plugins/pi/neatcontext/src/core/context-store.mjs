@@ -315,6 +315,22 @@ export async function createContext({ name, knowledgeFolder, profile, extensions
 //
 // Optional, unlike the description. A bundle written before this existed, or by
 // a host that does not generate them, is not broken — it just matches on less.
+// Terms that cannot mean the same thing on anyone else's machine, or that name
+// a person rather than a subject.
+//
+// A context is domain knowledge, and it is meant to be handed to a teammate
+// intact. A matching list is the easiest place for that to quietly stop being
+// true: an absolute path or a home directory looks like a useful rare term
+// while it is being written and is worthless — or worse, revealing — the moment
+// the bundle leaves the machine.
+//
+// This drops them from the matching lists only. If a local path really is part
+// of what the context is about, the profile and the knowledge folder are where
+// it belongs and are untouched by this; being unable to *search* for a context
+// by someone's home directory costs nothing worth having.
+const NOT_PORTABLE =
+  /(^|\s)(~[\\/]|[a-z]:[\\/]|\\\\)|[\\/](home|users|root)[\\/]|\S+@\S+\.\S/i;
+
 function normalizeRoutingList(value, limit) {
   if (!Array.isArray(value)) {
     return [];
@@ -325,7 +341,7 @@ function normalizeRoutingList(value, limit) {
     if (typeof entry !== "string") continue;
     const clean = entry.trim().replace(/\s+/g, " ").slice(0, MAX_ROUTING_TERM);
     const key = clean.toLowerCase();
-    if (clean.length === 0 || seen.has(key)) continue;
+    if (clean.length === 0 || seen.has(key) || NOT_PORTABLE.test(clean)) continue;
     seen.add(key);
     kept.push(clean);
     if (kept.length === limit) break;

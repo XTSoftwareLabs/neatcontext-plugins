@@ -285,9 +285,11 @@ export default function (pi) {
           type: "array",
           items: { type: "string" },
           description:
-            "Names that appear in this work and rarely elsewhere: services, repos, ticket " +
-            "ids, error strings, commands, hosts. Matched against, never shown. Omit on an " +
-            "update to leave the stored list alone."
+            "Names belonging to the subject that appear rarely elsewhere: services, " +
+            "components, repositories, ticket ids and prefixes, error strings, product and " +
+            "system names. This travels with the context when it is shared, so no absolute " +
+            "paths, home directories, usernames, personal names or email addresses. Matched " +
+            "against, never shown. Omit on an update to leave the stored list alone."
         },
         knowledge: {
           type: "array",

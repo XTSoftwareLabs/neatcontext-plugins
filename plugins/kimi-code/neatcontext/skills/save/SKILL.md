@@ -80,7 +80,11 @@ For creation:
 }
 ```
 
-`routingQuestions` holds 10 to 15 questions this context should answer, in the words a user would type rather than the words the profile uses. `routingEntities` holds the names that appear in this work and rarely elsewhere: services, repos, ticket ids, error strings, commands. Both are matched against and never shown, so prefer coverage over polish. On an update, omit both to leave the stored lists alone.
+`routingQuestions` holds 10 to 15 questions this context should answer, in the words a user would type rather than the words the profile uses. `routingEntities` holds names that belong to the subject and appear rarely elsewhere: services, components, repositories, ticket ids and prefixes, error strings, product and system names. Both are matched against and never shown, so prefer coverage over polish.
+
+Both lists travel with the context to anyone it is shared with, so write them as domain knowledge and nothing else: no absolute paths, no home directories, no usernames, no personal names, no email addresses, and nothing whose meaning depends on this machine or this person. If the work genuinely is about a particular environment, say so in the profile and keep these lists to terms a colleague would recognise.
+
+On an update, omit both to leave the stored lists alone.
 
 For an update, also include the exact `targetId` and `baseHash` printed by `save-target`. Every knowledge path must be a short relative `.md` path.
 

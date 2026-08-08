@@ -80,8 +80,16 @@ lets someone find this context when they have forgotten it exists.
 - `routingQuestions` — 10 to 15 questions this context should answer, written
   the way the user would type them rather than the way the profile describes
   them. Include the vague ones ("did we ever fix that timeout thing").
-- `routingEntities` — names that appear in this work and rarely anywhere else:
-  services, repos, ticket ids, error strings, commands, hosts, people.
+- `routingEntities` — names that belong to the subject and appear rarely
+  elsewhere: services, components, repositories, ticket ids and prefixes, error
+  strings, product and system names.
+
+Both lists travel with the context to anyone it is shared with, so write them as
+domain knowledge and nothing else. No absolute paths, no home directories, no
+usernames, no personal names, no email addresses, and nothing whose meaning
+depends on this machine or this person. If the work genuinely is about a
+particular environment, say so in the profile — that is what the profile is for
+— and keep these lists to the terms a colleague would recognise.
 
 Nothing reads either list aloud, so prefer coverage over polish. On an update,
 omit both fields to leave the stored lists untouched; supply them only when the

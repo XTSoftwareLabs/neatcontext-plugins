@@ -208,3 +208,57 @@ describe("what it buys", () => {
     assert.ok(!results.some((result) => result.name === "Pool limits June"));
   });
 });
+
+// A context is domain knowledge, and it is meant to be handed to a teammate
+// intact. The matching lists are the easiest place for that to quietly stop
+// being true: an absolute path looks like a useful rare term while it is being
+// written, and is worthless — or revealing — the moment the bundle is shared.
+describe("keeping the bundle portable", () => {
+  const withEntities = (routingEntities) =>
+    store.createCapturedContext({ ...INCIDENT, routingEntities });
+
+  it("drops machine paths that could never mean the same thing elsewhere", async () => {
+    const { record } = await withEntities([
+      "checkout-api",
+      String.raw`C:\Users\someone\projects\checkout`,
+      "/home/someone/checkout",
+      "/Users/someone/checkout",
+      "~/checkout",
+      String.raw`\\fileserver\share`
+    ]);
+    assert.deepEqual(record.routingEntities, ["checkout-api"]);
+  });
+
+  it("drops anything that identifies a person rather than a subject", async () => {
+    const { record } = await withEntities(["pgbouncer", "someone@example.com"]);
+    assert.deepEqual(record.routingEntities, ["pgbouncer"]);
+  });
+
+  it("applies the same rule to the questions", async () => {
+    const { record } = await store.createCapturedContext({
+      ...INCIDENT,
+      routingQuestions: ["why did checkout fail", String.raw`what is in C:\Users\someone\logs`]
+    });
+    assert.deepEqual(record.routingQuestions, ["why did checkout fail"]);
+  });
+
+  it("keeps ordinary domain terms that merely look technical", async () => {
+    // The filter must not eat the vocabulary the feature exists to store.
+    const { record } = await withEntities([
+      "checkout-api",
+      "INC-1001",
+      "default_pool_size",
+      "src/core/routing.mjs",
+      "billing-postgres:5432",
+      "user-service"
+    ]);
+    assert.deepEqual(record.routingEntities, [
+      "checkout-api",
+      "INC-1001",
+      "default_pool_size",
+      "src/core/routing.mjs",
+      "billing-postgres:5432",
+      "user-service"
+    ]);
+  });
+});
