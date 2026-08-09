@@ -90,10 +90,36 @@ const GET_CONTEXT_TOOL = {
 // there is nothing to connect.
 const NOTHING_CONNECTED_HEAD = "No NeatContext Context is connected to this session.";
 
+// The manual-mode version, and the fallback whenever no menu follows. Routing
+// is off here, so a command the user types is genuinely the only way forward.
 const NOTHING_CONNECTED =
   `${NOTHING_CONNECTED_HEAD} Connect one with \`/neatcontext:use\`, save this conversation as ` +
   "a new one with `/neatcontext:save`, or create one from a folder of documents with " +
   "`/neatcontext:create`. Until then, do not answer from general knowledge.";
+
+// What to say instead when routing is on and there are contexts to route to.
+//
+// Leading with `/neatcontext:use` in that situation is what made routing look
+// broken. This text is the first and most imperative thing the model reads, and
+// it answered "what now?" with a command for the user to type before the menu
+// below ever got a turn — so a question that plainly belonged to a saved
+// context came back as an offer to go and connect one by hand. The menu is
+// still what carries the mode-specific rules; these two only have to stop
+// contradicting it.
+const NOTHING_CONNECTED_ROUTABLE =
+  `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
+  "one is for. Connect the one this request belongs to with `use_context`, then call " +
+  "`get_context` again and answer from what it returns — do not ask the user to run a command " +
+  "to connect a context you can already name. If none of them covers the request, say so and " +
+  "offer `/neatcontext:save` to make one out of this conversation. Until then, do not answer " +
+  "from general knowledge.";
+
+const NOTHING_CONNECTED_ASK =
+  `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
+  "one is for. Routing is in ask mode, so name the one this request belongs to and ask whether " +
+  "to connect it rather than connecting first. If none of them covers the request, say so and " +
+  "offer `/neatcontext:save` to make one out of this conversation. Until then, do not answer " +
+  "from general knowledge.";
 
 const NOTHING_EXISTS =
   `${NOTHING_CONNECTED_HEAD} There are none on this machine yet, so \`/neatcontext:use\` has ` +
@@ -107,7 +133,7 @@ const CONNECTION_RULE = `## Connecting a context, in Kimi Code
 
 Contexts are connected from this session and nowhere else: the \`use_context\` tool, or \`/neatcontext:use <name>\` run by the user. \`/neatcontext:disconnect\` disconnects the current one from this session. New ones are made from here too: \`/neatcontext:save\` turns the work in this conversation into one, and \`/neatcontext:create\` builds one around a folder of documents the user already has.
 
-There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and offer to switch to it here.`;
+There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and connect it here with \`use_context\` — or offer to, when the routing rules above say to ask first.`;
 
 // The two tools that let a session change what it is grounded in. They are the
 // plugin's whole routing mechanism: there is no model in any process here, so
@@ -194,7 +220,7 @@ These instructions are fixed at the handshake and cannot be updated, so they are
 When the user asks anything that depends on their own domain, documents, tools, or team conventions, call the get_context tool and let its answer decide:
 
 - If it returns a Context, ground your answer in it and cite what you used.
-- Only if it reports that nothing is connected, say so, and offer the way forward it names — connecting an existing context with /neatcontext:use, saving this conversation as a new one with /neatcontext:save, or building one from a folder of documents with /neatcontext:create. Which of those actually applies depends on what exists right now, so relay what the tool says rather than guessing from this text.`;
+- If it reports that nothing is connected, it also lists the contexts that exist and says what to do about them — which may be to connect one yourself with the use_context tool, to ask the user first, or to tell them to run a command. Do what that answer says. It knows the current state and this text does not, so never substitute a slash command of your own for the route it offers.`;
 
 const BINDING_RULE =
   "NeatContext has not yet bound its MCP bridge to this Kimi Code session. Call " +
@@ -254,7 +280,17 @@ async function listAllContexts() {
 // they have none.
 async function nothingConnectedText() {
   const { contexts } = await listAllContexts().catch(() => ({ contexts: [] }));
-  return contexts.length === 0 ? NOTHING_EXISTS : NOTHING_CONNECTED;
+  if (contexts.length === 0) {
+    return NOTHING_EXISTS;
+  }
+  // The mode decides whether a menu is about to follow this text, and therefore
+  // whether pointing at a slash command is the honest answer or the one that
+  // breaks routing.
+  const mode = resolveMode(await readRouting().catch(() => ({ sessions: {} })), sessionId());
+  if (mode === "manual") {
+    return NOTHING_CONNECTED;
+  }
+  return mode === "ask" ? NOTHING_CONNECTED_ASK : NOTHING_CONNECTED_ROUTABLE;
 }
 
 // The selected context, or null when nothing is selected. A selection

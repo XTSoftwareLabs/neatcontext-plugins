@@ -140,10 +140,28 @@ describe("renderShortlist", () => {
   });
 
   it("carries the same routing rules as the full menu", () => {
-    const text = routing.renderShortlist(entries, { mode: "ask" });
+    const text = routing.renderShortlist(entries, { mode: "ask", connectedId: "b" });
     assert.match(text, /Routing is on \(ask\)/);
     assert.match(text, /Do not route on follow-ups/);
     assert.match(text, /pass what they called it as `alias`/);
+  });
+
+  // The follow-up guard exists to make *leaving* a context cost something. With
+  // nothing connected there is nowhere to leave from, and the same sentence
+  // reads as a reason to do nothing at all — which is how a request that
+  // plainly belonged to a saved context got answered from general knowledge.
+  it("drops the follow-up guard when the session is grounded in nothing", () => {
+    const text = routing.renderShortlist(entries, { mode: "auto" });
+    assert.doesNotMatch(text, /Do not route on follow-ups/);
+    assert.match(text, /nothing to leave/);
+    assert.match(text, /connect it with the `use_context` tool/);
+    assert.match(text, /do not ask the user to run a command/);
+  });
+
+  it("still asks first in ask mode when nothing is connected", () => {
+    const text = routing.renderShortlist(entries, { mode: "ask" });
+    assert.match(text, /Routing is on \(ask\)/);
+    assert.match(text, /never connect first/);
   });
 
   it("uses the auto wording in auto mode", () => {

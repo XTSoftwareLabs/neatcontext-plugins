@@ -112,6 +112,25 @@ describe("local Contexts", () => {
     assert.doesNotMatch(context, /\$neatcontext:/);
   });
 
+  // With contexts to route to, a slash command is the wrong lead: it answers
+  // "what now?" before the menu below it gets a turn, and the model acts on it.
+  it("tells an ungrounded session to connect a context itself", async () => {
+    await createOrders();
+    const context = await runtime.getContext("order fulfillment");
+    assert.match(context, /Connect the one this request belongs to with `use_context`/);
+    assert.match(context, /do not ask the user to run a command/);
+  });
+
+  // Manual mode publishes no menu, so there is nothing for the session to
+  // connect from and the command really is the only way forward.
+  it("falls back to the commands when routing is off", async () => {
+    await createOrders();
+    await runtime.commandMode("manual");
+    const context = await runtime.getContext("order fulfillment");
+    assert.match(context, /Connect one with `\/neatcontext-use`/);
+    assert.doesNotMatch(context, /## Contexts available on this machine/);
+  });
+
   it("refuses a knowledge folder that is not there", async () => {
     const result = await runtime.createContext({
       name: "Ghost",

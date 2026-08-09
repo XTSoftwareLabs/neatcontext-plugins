@@ -610,8 +610,9 @@ test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
   const empty = await session.call(toolCall(3, "get_context"));
   assert.equal(empty.result.isError, false);
   assert.match(empty.result.content[0].text, /No NeatContext Context is connected/);
-  // A context exists here, so `use` is a real option and leads.
-  assert.match(empty.result.content[0].text, /\/neatcontext:use/);
+  // A context exists and routing is on, so the answer leads with the route this
+  // session can take itself rather than with a command for the user to type.
+  assert.match(empty.result.content[0].text, /Connect the one this request belongs to/);
 
   // Ask mode refuses an unrequested switch. It is set explicitly rather than
   // assumed, so this keeps testing ask mode whatever the default becomes.

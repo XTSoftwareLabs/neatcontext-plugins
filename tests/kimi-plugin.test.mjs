@@ -588,4 +588,55 @@ test("Kimi narrows the routing menu to the request", async (t) => {
   );
   assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
   assert.match(unmatched.result.content[0].text, /Docker container/);
+
+  // Nothing is connected in this session, which is the case routing exists for.
+  // Leading with a slash command there is what made routing look broken: it is
+  // the first thing the model reads and it answers "what now?" before the menu
+  // below it gets a turn.
+  assert.match(narrowed, /Connect the one this request belongs to with `use_context`/);
+  assert.match(narrowed, /do not ask the user to run a command/);
+});
+
+// Manual mode publishes no menu, so there is nothing for the session to connect
+// from and the command really is the only way forward.
+test("Kimi falls back to the commands when routing is off", async (t) => {
+  const home = await localHome("neatcontext-kimi-manual-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+    await rm(home.directory, { recursive: true, force: true });
+  });
+
+  await createLocalContext(home, "kimi-manual", "Refunds", "refunds and chargebacks");
+  await runNode(cli, ["--session-id", "kimi-manual", "mode", "manual"], { env: home.env });
+
+  const session = rpcSession(home.env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  await session.call(toolCall(2, "bind_session", { session_id: "kimi-manual" }));
+
+  const text = (await session.call(toolCall(3, "get_context", { query: "refunds" }))).result
+    .content[0].text;
+  assert.match(text, /Connect one with `\/neatcontext:use`/);
+  assert.doesNotMatch(text, /## Contexts/);
+});
+
+// The cold start: bound, routing on, but nothing saved yet. `use` has nothing
+// to list, so the answer has to lead with save rather than with the menu.
+test("Kimi empty store points at save", async (t) => {
+  const home = await localHome("neatcontext-kimi-empty-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+    await rm(home.directory, { recursive: true, force: true });
+  });
+
+  const session = rpcSession(home.env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  await session.call(toolCall(2, "bind_session", { session_id: "kimi-empty" }));
+
+  const text = (await session.call(toolCall(3, "get_context"))).result.content[0].text;
+  assert.match(text, /nothing to list/);
+  assert.match(text, /\/neatcontext:save/);
 });

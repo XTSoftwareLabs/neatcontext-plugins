@@ -41,7 +41,9 @@ export const MODES = ["auto", "ask", "manual"];
 // Asking every time then costs a question per turn and buys nothing.
 export const DEFAULT_MODE = "auto";
 
-const SCHEMA = 1;
+// 2 marks the file as one where a stored mode means somebody chose it. See
+// `chosenMode` for what schema 1 got wrong and why it cannot be read literally.
+const SCHEMA = 2;
 const MAX_USE_WHEN = 240;
 const MAX_ALIASES = 12;
 const MAX_DECISIONS = 100;
@@ -137,11 +139,38 @@ export async function readRouting() {
   return {
     schema: SCHEMA,
     declines,
-    mode: MODES.includes(parsed?.mode) ? parsed.mode : DEFAULT_MODE,
+    mode: chosenMode(parsed),
     cards,
     sessions: typeof parsed?.sessions === "object" && parsed.sessions !== null ? parsed.sessions : {},
     decisions: Array.isArray(parsed?.decisions) ? parsed.decisions : []
   };
+}
+
+// The mode the user actually chose, or null when nobody has.
+//
+// Null is not a synonym for the default, and the difference is the whole point.
+// Until schema 2 the *resolved* mode was written back on every routing write —
+// deriving a card, logging a decision, noting a refusal — so a file ended up
+// stating whatever the default happened to be in the build that last touched
+// it. "ask" was that default until the shortlist learned to ask on its own, so
+// every machine that had ever saved a context had "ask" written down, and
+// changing the default to "auto" reached none of them. Routing looked switched
+// off on exactly the machines that used it most, and reinstalling did not help:
+// this file lives in ~/.neatcontext and outlives any one plugin install.
+//
+// So an "ask" in a pre-schema-2 file is not evidence of a choice, and is
+// dropped. A machine where it genuinely was one loses it once, and a single
+// `/neatcontext:mode ask --global` puts it back — written under schema 2 this
+// time, where a stored mode means somebody asked for it. "manual" is never a
+// default, so it was always deliberate and always stands.
+function chosenMode(parsed) {
+  if (!MODES.includes(parsed?.mode)) {
+    return null;
+  }
+  if (parsed.schema !== SCHEMA && parsed.mode === "ask") {
+    return null;
+  }
+  return parsed.mode;
 }
 
 async function writeRouting(state) {
@@ -151,11 +180,16 @@ async function writeRouting(state) {
     .slice(0, MAX_SESSIONS);
   const file = routingFilePath();
   await mkdir(path.dirname(file), { recursive: true });
+  const { mode, ...rest } = state;
   await writeFile(
     file,
     `${JSON.stringify(
       {
-        ...state,
+        ...rest,
+        // Written down only when somebody chose it. An unchosen mode stays out
+        // of the file entirely, so this machine keeps following the default
+        // rather than pinning whichever one this build happens to ship.
+        ...(MODES.includes(mode) ? { mode } : {}),
         sessions: Object.fromEntries(sessions),
         declines: pruneDeclines(state.declines, Date.now()),
         decisions: state.decisions.slice(-MAX_DECISIONS)
@@ -232,7 +266,12 @@ export function isCardStale(card, source) {
 // auto, another window writing code wants to be left alone.
 export function resolveMode(state, id) {
   const session = id ? state.sessions[id] : null;
-  return MODES.includes(session?.mode) ? session.mode : state.mode;
+  if (MODES.includes(session?.mode)) {
+    return session.mode;
+  }
+  // `state.mode` is null on a machine where nobody has set one, which is what
+  // lets the default below actually apply.
+  return MODES.includes(state.mode) ? state.mode : DEFAULT_MODE;
 }
 
 export function setMode(mode, { global: isGlobal = false, id = sessionId() } = {}) {
@@ -422,21 +461,41 @@ export function renderMenu(entries, { connectedId, mode } = {}) {
     lines.push(`- **${entry.name}**${marker} — ${describe(entry)}`);
   }
   lines.push("");
-  lines.push(...routingInstructions(mode));
+  lines.push(...routingInstructions(mode, Boolean(connectedId)));
   return lines.join("\n");
 }
 
 // Shared with the shortlist below, because a shortlist is still a menu: the
 // same model still decides, still asks first in ask mode, and still must not
 // route on a follow-up. Only the number of things it chooses between differs.
-function routingInstructions(mode) {
+//
+// Split on whether anything is connected, because the two situations are not
+// the same move. Switching means leaving somewhere, and every guard here —
+// "clearly belongs", "not on a follow-up", "stands on its own" — exists to make
+// leaving cost something. A session grounded in nothing has nowhere to leave
+// from: the same guards read as reasons to do nothing at all, which is how a
+// question that plainly belonged to a saved context ended up answered from
+// general knowledge with a slash command offered as consolation.
+function routingInstructions(mode, connected) {
   return [
-    mode === "auto"
-      ? "Routing is on (auto). When the user's request clearly belongs to one of the other contexts above, switch to it with the `use_context` tool, then call `get_context` and answer from what it returns. Say in one line that you switched, and which context you are now on. When two contexts are both plausible, do not guess — name them and ask which one."
-      : "Routing is on (ask). When the user's request clearly belongs to one of the other contexts above, say so and ask before switching — never switch first. If they agree, call `use_context`, then `get_context`, and answer from what it returns.",
-    "Do not route on follow-ups, short replies, or anything that continues the current topic — a switch needs a request that stands on its own and plainly belongs elsewhere. If the user declines a switch, drop it and do not raise that context again this session.",
+    connected ? switchInstruction(mode) : connectInstruction(mode),
+    connected
+      ? "Do not route on follow-ups, short replies, or anything that continues the current topic — a switch needs a request that stands on its own and plainly belongs elsewhere. If the user declines a switch, drop it and do not raise that context again this session."
+      : "There is no current topic to continue and nothing to leave, so connecting the context a request belongs to is the expected move rather than an interruption. If the user declines one, drop it and do not raise that context again this session.",
     "When the user corrects a wrong route, pass what they called it as `alias` to `use_context` so the same words route correctly next time."
   ];
+}
+
+function switchInstruction(mode) {
+  return mode === "auto"
+    ? "Routing is on (auto). When the user's request clearly belongs to one of the other contexts above, switch to it with the `use_context` tool, then call `get_context` and answer from what it returns. Say in one line that you switched, and which context you are now on. When two contexts are both plausible, do not guess — name them and ask which one."
+    : "Routing is on (ask). When the user's request clearly belongs to one of the other contexts above, say so and ask before switching — never switch first. If they agree, call `use_context`, then `get_context`, and answer from what it returns.";
+}
+
+function connectInstruction(mode) {
+  return mode === "auto"
+    ? "Routing is on (auto), and this session is grounded in nothing yet. When the user's request belongs to one of the contexts above, connect it with the `use_context` tool, then call `get_context` and answer from what it returns. Do that yourself — do not ask the user to run a command to connect a context you can already name. Say in one line which context you connected. When two contexts are both plausible, do not guess — name them and ask which one."
+    : "Routing is on (ask), and this session is grounded in nothing yet. When the user's request belongs to one of the contexts above, name it and ask whether to connect it — never connect first. If they agree, call `use_context`, then `get_context`, and answer from what it returns.";
 }
 
 // The same menu, cut down to what the request actually reached.
@@ -461,13 +520,15 @@ export function renderShortlist(entries, { connectedId, mode, decision } = {}) {
   }
   lines.push("");
   lines.push(
-    "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — that is a reason to stay where you are, not to reach for the closest one here."
+    connectedId
+      ? "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — that is a reason to stay where you are, not to reach for the closest one here."
+      : "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — so if none of these covers the request, say the store does not have it rather than reaching for the closest one here."
   );
   const tie = tieNote(decision);
   if (tie) {
     lines.push(tie);
   }
-  lines.push(...routingInstructions(mode));
+  lines.push(...routingInstructions(mode, Boolean(connectedId)));
   return lines.join("\n");
 }
 
@@ -486,7 +547,7 @@ function tieNote(decision) {
   return (
     `${names} match the request about equally well, so which one is right is not something to ` +
     "decide on the user's behalf. Name them, say in one line what each covers, and ask which — " +
-    "in auto mode too. Switch only once they have answered."
+    "in auto mode too. Call `use_context` only once they have answered."
   );
 }
 

@@ -173,7 +173,9 @@ describe("renderShortlist with a decision", () => {
   it("overrides auto explicitly, since auto is where the mistake would go unseen", () => {
     const text = routing.renderShortlist(entries, { mode: "auto", decision: assess(entries) });
     assert.match(text, /in auto mode too/);
-    assert.match(text, /Switch only once they have answered/);
+    // Worded for both situations: a near-tie is a question whether the session
+    // would be switching contexts or connecting its first one.
+    assert.match(text, /Call `use_context` only once they have answered/);
   });
 
   it("says nothing about ties when there is a clear leader", () => {

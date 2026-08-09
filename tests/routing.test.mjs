@@ -260,6 +260,48 @@ describe("session routing", () => {
     }
   });
 
+  // Nothing connected is the case routing exists for, so the answer must lead
+  // with the route the session can take itself. Leading with a slash command
+  // there is what made routing look broken: it is the first thing the model
+  // reads, and it answers "what now?" before the menu below gets a turn.
+  it("tells an ungrounded session to connect a context itself", async () => {
+    await create("Payments", "payment failures");
+    await create("Orders", "order fulfillment");
+    const session = bridge("ungrounded-window");
+    try {
+      await session.send("initialize", { protocolVersion: "2025-11-25" });
+      const answer = await session.send("tools/call", {
+        name: "get_context",
+        arguments: { query: "why are payments failing?" }
+      });
+      const text = answer.result.content[0].text;
+      assert.match(text, /Connect the one this request belongs to with `use_context`/);
+      assert.match(text, /do not ask the user to run a command/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  // Manual mode publishes no menu, so there is nothing to connect from and the
+  // command really is the only way forward.
+  it("falls back to the commands when routing is off", async () => {
+    await create("Payments", "payment failures");
+    await cli(["mode", "manual"], "manual-window");
+    const session = bridge("manual-window");
+    try {
+      await session.send("initialize", { protocolVersion: "2025-11-25" });
+      const answer = await session.send("tools/call", {
+        name: "get_context",
+        arguments: { query: "why are payments failing?" }
+      });
+      const text = answer.result.content[0].text;
+      assert.match(text, /Connect one with `\/neatcontext:use`/);
+      assert.doesNotMatch(text, /## Contexts/);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("previews a Context without changing the selection", async () => {
     await create("Payments", "payment failures");
     await create("Orders", "order fulfillment");
