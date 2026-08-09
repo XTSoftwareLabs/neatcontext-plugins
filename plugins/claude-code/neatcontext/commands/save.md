@@ -55,9 +55,12 @@ Follow the `Save action` from `save-target`:
 - `unavailable` — relay why the destination cannot be updated and ask for a new
   context name.
 
-Updating a named context does not connect or switch to it. When it is not the
-connected context, treat its profile as source material for this save only; do
-not adopt its instructions or re-ground the current session.
+A save never switches a session that already has a context connected. When the
+target is not the connected context, treat its profile as source material for
+this save only; do not adopt its instructions or re-ground the current session.
+
+A session with nothing connected is the one exception, and the CLI applies it:
+saving connects the session to the context it just wrote, and says so.
 
 ## Build an ephemeral evidence view
 
@@ -248,6 +251,8 @@ leave it available for repair. If the context changed after drafting, resolve
 the target again and rebuild the merge from its new contents rather than
 reusing the stale capture.
 
-Relay successful output as printed. Do not connect a new or named context
-automatically. An updated connected context remains connected and is available
-immediately.
+Relay successful output as printed, and never connect a context yourself — the
+CLI decides. A session that had nothing connected is connected to what the save
+wrote, and its output says so; ground the rest of this session in that context.
+A session that already had one keeps it, whichever context the save wrote to.
+An updated connected context remains connected and is available immediately.

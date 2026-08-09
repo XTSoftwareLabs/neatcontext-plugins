@@ -272,8 +272,34 @@ describe("save", () => {
       knowledge
     });
     assert.match(saved, /Saved context: Queue lag/);
-    assert.match(saved, /\/neatcontext-use Queue lag/);
+    // Nothing was connected to this session, so the save is also the connection.
+    assert.match(saved, /Connected context: Queue lag/);
+    assert.match(await runtime.commandStatus(), /Connected context: Queue lag/);
     assert.match(await runtime.commandList(), /Queue lag/);
+  });
+
+  it("connects a session that had no context, and leaves a connected one alone", async () => {
+    await createOrders();
+    const first = await runtime.saveContext({
+      name: "Queue lag",
+      profile: "# Queue lag\n\n## Purpose\n\nPartition skew.\n",
+      routingDescription: "order-events partition lag",
+      knowledge
+    });
+    assert.match(first, /Connected context: Queue lag/);
+
+    // Save As, from a session that is already grounded: the new context is
+    // written, and the session stays where it was.
+    await runtime.commandUse("Orders");
+    const second = await runtime.saveContext({
+      name: "Queue lag II",
+      profile: "# Queue lag II\n\n## Purpose\n\nMore partition skew.\n",
+      routingDescription: "order-events partition lag, second pass",
+      knowledge
+    });
+    assert.match(second, /Connect it with: \/neatcontext-use Queue lag II/);
+    assert.match(second, /stays connected to "Orders"/);
+    assert.match(await runtime.commandStatus(), /Connected context: Orders/);
   });
 
   it("exports a saved Context and keeps the neutral manifest", async () => {

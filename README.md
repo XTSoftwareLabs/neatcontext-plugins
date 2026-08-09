@@ -99,15 +99,22 @@ Claude:
 Context folder: C:\Users\alex\.neatcontext\contexts\event-partition-investigation
 Profile path: C:\Users\alex\.neatcontext\contexts\event-partition-investigation\profile.md
 Knowledge folder: C:\Users\alex\.neatcontext\contexts\event-partition-investigation\knowledge
-Use command: /neatcontext:use event-partition-investigation
+Connected context: event-partition-investigation
+This session had no context connected, so it is now grounded in the one it just
+saved. Your next messages will use its domain profile and knowledge folder.
 ```
 
 The saved context keeps the investigation approach, system knowledge, findings,
 and verified resolution—not the raw conversation.
 
-After more work on the same subject, run
-`/neatcontext:save event-partition-investigation` again. Because that exact name
-already exists, Claude previews a merged update and asks before applying it.
+This session had nothing connected, so saving also connected it — the work it
+just wrote up is the work it is still doing. A session that already has a
+context connected keeps it, even when you save under a new name; use
+`/neatcontext:use` when you actually want to switch.
+
+After more work on the same subject, run `/neatcontext:save` again. With no
+name it updates the context this session is now connected to, previewing the
+merged result and asking before applying it.
 
 When a similar issue appears later, connect the saved context in a new Claude
 Code session by using `/neatcontext:use`. The NeatContext plugin can also route you to the right context in

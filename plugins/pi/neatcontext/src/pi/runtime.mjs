@@ -65,6 +65,7 @@ import {
 import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
 import {
   applySelection,
+  connectAfterSave,
   disconnectSelection,
   listAllContexts,
   resolveContext
@@ -989,6 +990,28 @@ function formatChangedFiles(label, files) {
   return files.length === 0 ? [] : [`  ${label}: ${files.join(", ")}`];
 }
 
+// Where this session stands once the save has landed. An unconnected session
+// adopts what it just wrote; a connected one is told, in the same breath as the
+// `use` line, that it was left alone on purpose.
+async function saveConnectionLines(record) {
+  const outcome = await connectAfterSave(record).catch(() => null);
+  if (outcome?.connected) {
+    return [
+      `Connected context: ${record.name}`,
+      "This session had no context connected, so it is now grounded in the one it just " +
+        "saved. Your next messages will use its domain profile and knowledge folder."
+    ];
+  }
+  const lines = [`Connect it with: /neatcontext-use ${record.name}`];
+  if (outcome && outcome.contextId !== record.id) {
+    lines.push(
+      `This session stays connected to "${outcome.contextName}" — a save records work, ` +
+        "it does not switch the context you are working in."
+    );
+  }
+  return lines;
+}
+
 function renderUpdatePreview(preview) {
   const { record, changes } = preview;
   const lines = [
@@ -1077,7 +1100,7 @@ export async function saveContext(args = {}) {
         ...(result.record.knowledgeManaged
           ? []
           : [`Conversation knowledge folder: ${result.record.conversationKnowledgeFolder}`]),
-        `Connect it with: /neatcontext-use ${result.record.name}`
+        ...(await saveConnectionLines(result.record))
       ].join("\n");
     }
 
@@ -1094,7 +1117,7 @@ export async function saveContext(args = {}) {
       `Context folder: ${result.record.directory}`,
       `Profile path: ${result.record.profilePath}`,
       `Knowledge folder: ${result.record.knowledgeFolder}`,
-      `Connect it with: /neatcontext-use ${result.record.name}`
+      ...(await saveConnectionLines(result.record))
     ].join("\n");
   } catch (error) {
     if (error instanceof ContextError) {
