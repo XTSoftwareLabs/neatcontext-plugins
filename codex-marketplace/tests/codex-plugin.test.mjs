@@ -451,3 +451,67 @@ test("Codex narrows the routing menu to the request", async () => {
     await session.close();
   }
 });
+
+// A thread with nothing selected is the case routing exists for. Leading with
+// `$neatcontext:use` there is what made routing look broken: it is the first
+// thing the model reads and it answers "what now?" before the menu below it
+// gets a turn. The no-polling rule has to survive the rewording.
+test("Codex tells an unselected thread to select a Context itself", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "neatcontext-codex-unselected-"));
+  const env = { NEATCONTEXT_HOME: home, CODEX_THREAD_ID: "unselected-thread" };
+  const capturePath = path.join(home, "refunds.json");
+  await writeFile(
+    capturePath,
+    JSON.stringify({
+      schema: 1,
+      name: "Refunds",
+      profile:
+        "# Refunds\n\n## Purpose\nRefunds and chargebacks.\n\n## What to do\nAnswer.\n\n" +
+        "## What to avoid\nGuessing.\n\n## Behavior\nBe concise.",
+      routingDescription: "refunds and chargebacks",
+      knowledge: [{ path: "session-summary.md", content: "# Refunds\n\nrefunds" }]
+    }),
+    "utf8"
+  );
+  assert.equal((await runNode(cli, ["save", "--from", capturePath, "--consume"], { env })).code, 0);
+  // Saving connects an unconnected session, so step back off it to reach the
+  // state this test is about.
+  assert.equal((await runNode(cli, ["disconnect"], { env })).code, 0);
+
+  const session = rpcSession(env);
+  try {
+    await session.call({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } }
+    });
+    const routable = (
+      await session.call({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "get_context", arguments: { query: "refunds" } }
+      })
+    ).result.content[0].text;
+    assert.match(routable, /select it with use_context/);
+    assert.match(routable, /do not ask the user to run a command/);
+    assert.match(routable, /do not retry get_context/, "the no-polling rule must survive");
+
+    // Manual mode publishes no menu, so there is nothing to select from and the
+    // command really is the only way forward.
+    assert.equal((await runNode(cli, ["mode", "manual"], { env })).code, 0);
+    const manual = (
+      await session.call({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "get_context", arguments: { query: "refunds" } }
+      })
+    ).result.content[0].text;
+    assert.match(manual, /Connect one with `\$neatcontext:use`/);
+    assert.doesNotMatch(manual, /## Contexts/);
+  } finally {
+    await session.close();
+  }
+});

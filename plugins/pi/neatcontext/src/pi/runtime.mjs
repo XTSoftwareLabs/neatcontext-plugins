@@ -73,19 +73,62 @@ import {
 
 export const PLUGIN_VERSION = "0.1.0";
 
-// The one thing to say when a session has nothing to ground in. It is
-// deliberately about what to do in the current session.
+// What to say when a session has nothing to ground in. It is deliberately about
+// what to do in the current session.
+//
+// This one is for when routing cannot help: manual mode, or a store with
+// nothing in it yet. A command the user types is then genuinely the only way
+// forward.
 export const NOTHING_CONNECTED =
   "No NeatContext Context is connected to this session. Connect one with " +
   "`/neatcontext-use`, save this conversation with `/neatcontext-save`, or create one " +
   "with `/neatcontext-create`. Until then, do not answer from general knowledge.";
+
+// What to say instead when routing is on and there are contexts to route to.
+//
+// Leading with `/neatcontext-use` in that situation is what made routing look
+// broken. This text is the first and most imperative thing the model reads, and
+// it answered "what now?" with a command for the user to type before the menu
+// below ever got a turn — so a question that plainly belonged to a saved
+// context came back as an offer to go and connect one by hand. The menu is
+// still what carries the mode-specific rules; these two only have to stop
+// contradicting it.
+export const NOTHING_CONNECTED_ROUTABLE =
+  "No NeatContext Context is connected to this session. There are contexts on this machine, " +
+  "listed below with what each one is for. Connect the one this request belongs to with " +
+  "`use_context`, then call `get_context` again and answer from what it returns — do not ask " +
+  "the user to run a command to connect a context you can already name. If none of them covers " +
+  "the request, say so and offer `/neatcontext-save` to make one out of this conversation. " +
+  "Until then, do not answer from general knowledge.";
+
+export const NOTHING_CONNECTED_ASK =
+  "No NeatContext Context is connected to this session. There are contexts on this machine, " +
+  "listed below with what each one is for. Routing is in ask mode, so name the one this request " +
+  "belongs to and ask whether to connect it rather than connecting first. If none of them " +
+  "covers the request, say so and offer `/neatcontext-save` to make one out of this " +
+  "conversation. Until then, do not answer from general knowledge.";
+
+// The mode decides whether a menu is about to follow this text, and therefore
+// whether pointing at a slash command is the honest answer or the one that
+// breaks routing.
+export async function nothingConnectedText() {
+  const { contexts } = await listAllContexts().catch(() => ({ contexts: [] }));
+  if (contexts.length === 0) {
+    return NOTHING_CONNECTED;
+  }
+  const mode = resolveMode(await readRouting().catch(() => ({ sessions: {} })), sessionId());
+  if (mode === "manual") {
+    return NOTHING_CONNECTED;
+  }
+  return mode === "ask" ? NOTHING_CONNECTED_ASK : NOTHING_CONNECTED_ROUTABLE;
+}
 
 // How connecting works in pi.
 const CONNECTION_RULE = `## Connecting a context, in pi
 
 Contexts are connected from this session and nowhere else: the \`use_context\` tool, or \`/neatcontext-use <name>\` run by the user. \`/neatcontext-disconnect\` disconnects the current one from this session. \`/neatcontext-save\` saves the current conversation and \`/neatcontext-create\` makes one from a knowledge folder.
 
-There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and offer to switch to it here.`;
+There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and connect it here with \`use_context\` — or offer to, when the routing rules above say to ask first.`;
 
 const CONTEXT_INSTRUCTIONS = `This session can be grounded in a NeatContext Context: one domain profile and local knowledge stored on this machine.
 
@@ -102,7 +145,7 @@ const NO_CONTEXT_INSTRUCTIONS = `No NeatContext Context is connected to this ses
 When the user asks anything that depends on their own domain, documents, tools, or team conventions, call the get_context tool and let its answer decide:
 
 - If it returns a Context, ground your answer in it and cite what you used.
-- Only if it reports that nothing is connected, say so, and tell them to connect one with /neatcontext-use, save this conversation with /neatcontext-save, or create one with /neatcontext-create.`;
+- If it reports that nothing is connected, it also lists the contexts that exist and says what to do about them — which may be to connect one yourself with the use_context tool, to ask the user first, or to tell them to run a command. Do what that answer says, rather than substituting a slash command of your own for the route it offers.`;
 
 // --- which source serves this session ----------------------------------------
 
@@ -320,7 +363,7 @@ export async function getContext(query) {
     return `${parts.join("\n\n")}\n\n${await pluginNotes(query)}`;
   }
   await resolveExtensions(null);
-  return `${NOTHING_CONNECTED}\n\n${await pluginNotes(query)}`;
+  return `${await nothingConnectedText()}\n\n${await pluginNotes(query)}`;
 }
 
 // --- routing tools ------------------------------------------------------------

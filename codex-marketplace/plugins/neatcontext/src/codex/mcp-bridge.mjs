@@ -82,10 +82,35 @@ const GET_CONTEXT_TOOL = {
 // there is nothing to connect.
 const NOTHING_CONNECTED_HEAD = "No NeatContext Context is selected for this thread.";
 
+// The manual-mode version, and the fallback whenever no menu follows. Routing
+// is off here, so a command the user types is genuinely the only way forward.
 const NOTHING_CONNECTED =
   `${NOTHING_CONNECTED_HEAD} Continue normal work without NeatContext grounding. Do not retry ` +
   "get_context until use_context succeeds or the user explicitly asks to refresh NeatContext " +
   "state. Connect one with `$neatcontext:use`.";
+
+// What to say instead when routing is on and there are Contexts to route to.
+//
+// Leading with `$neatcontext:use` in that situation is what made routing look
+// broken: this text is the first and most imperative thing the model reads, and
+// it answered "what now?" with a command for the user to type before the menu
+// below ever got a turn. The no-polling rule these carry is the same one the
+// original text established — a Context that does not exist is not worth asking
+// about twice — and selecting one the menu already names is not polling.
+const NOTHING_CONNECTED_ROUTABLE =
+  `${NOTHING_CONNECTED_HEAD} There are Contexts on this machine, listed below with what each ` +
+  "one is for. When one of them covers what the user asked, select it with use_context and " +
+  "then call get_context once — do not ask the user to run a command to select a Context you " +
+  "can already name. When none of them covers it, continue normal work without NeatContext " +
+  "grounding and do not retry get_context until use_context succeeds or the user explicitly " +
+  "asks to refresh NeatContext state.";
+
+const NOTHING_CONNECTED_ASK =
+  `${NOTHING_CONNECTED_HEAD} There are Contexts on this machine, listed below with what each ` +
+  "one is for. Routing is in ask mode, so name the one that covers what the user asked and ask " +
+  "whether to select it rather than selecting first. When none of them covers it, continue " +
+  "normal work without NeatContext grounding and do not retry get_context until use_context " +
+  "succeeds or the user explicitly asks to refresh NeatContext state.";
 
 const NOTHING_EXISTS =
   `${NOTHING_CONNECTED_HEAD} There are none on this machine yet. Continue normal work without ` +
@@ -97,7 +122,7 @@ const CONNECTION_RULE = `## Connecting a context, in Codex
 
 Contexts are connected from this session and nowhere else: the \`use_context\` tool, or \`$neatcontext:use <name>\` run by the user. \`$neatcontext:disconnect\` disconnects the current one from this session. New ones are made from here too: \`$neatcontext:save\` turns the work in this conversation into one, and \`$neatcontext:create\` builds one around a folder of documents the user already has.
 
-There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and offer to switch to it here.`;
+There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and select it here with \`use_context\` — or offer to, when the routing rules above say to ask first.`;
 
 // The two tools that let a session change what it is grounded in. They are the
 // plugin's whole routing mechanism: there is no model in any process here, so
@@ -202,7 +227,17 @@ async function listAllContexts() {
 // they have none.
 async function nothingConnectedText() {
   const { contexts } = await listAllContexts().catch(() => ({ contexts: [] }));
-  return contexts.length === 0 ? NOTHING_EXISTS : NOTHING_CONNECTED;
+  if (contexts.length === 0) {
+    return NOTHING_EXISTS;
+  }
+  // The mode decides whether a menu is about to follow this text, and therefore
+  // whether pointing at a command is the honest answer or the one that breaks
+  // routing.
+  const mode = resolveMode(await readRouting().catch(() => ({ sessions: {} })), sessionId());
+  if (mode === "manual") {
+    return NOTHING_CONNECTED;
+  }
+  return mode === "ask" ? NOTHING_CONNECTED_ASK : NOTHING_CONNECTED_ROUTABLE;
 }
 
 // The selected context, or null when nothing is selected. A selection
