@@ -186,11 +186,24 @@ function toolCall(id, name, args = {}) {
 }
 
 // One isolated NeatContext home per test.
+//
+// The host variables are blanked rather than inherited: this suite runs *inside*
+// a Copilot session on a developer machine, and a real COPILOT_AGENT_SESSION_ID
+// leaking into every child would silently replace the identity under test. An
+// empty value is "not set" everywhere it is read, so each test exercises the
+// same fallbacks a clean host would. The host key is pinned per home so the
+// pointer files of two tests running concurrently cannot collide.
 async function isolatedHome(prefix) {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
   return {
     directory,
-    env: { NEATCONTEXT_HOME: directory }
+    env: {
+      NEATCONTEXT_HOME: directory,
+      NEATCONTEXT_SESSION_ID: "",
+      COPILOT_AGENT_SESSION_ID: "",
+      COPILOT_LOADER_PID: "",
+      NEATCONTEXT_HOST_KEY: `test-${path.basename(directory)}`
+    }
   };
 }
 

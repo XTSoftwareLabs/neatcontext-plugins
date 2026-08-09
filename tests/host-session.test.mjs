@@ -9,6 +9,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import {
   awaitBridgeSession,
   bridgePointerPath,
+  configureHostPid,
   hostKey,
   hostPointerPath,
   hostsDirectory,
@@ -51,6 +52,8 @@ after(async () => {
 beforeEach(async () => {
   process.env.NEATCONTEXT_HOME = directory;
   process.env.NEATCONTEXT_HOST_KEY = "host-under-test";
+  // Core knows no host's variable by name; the adapter under test registers it.
+  configureHostPid(() => process.env.CLAUDE_PID);
   await rm(hostsDirectory(), { recursive: true, force: true });
 });
 
@@ -99,6 +102,29 @@ describe("which host process this is", () => {
     delete process.env.NEATCONTEXT_HOST_KEY;
     process.env.CLAUDE_PID = "not-a-pid";
     assert.equal(hostKey(), `pid-${process.ppid}`);
+  });
+
+  it("ignores a host variable no adapter registered, so one host cannot key on another", () => {
+    delete process.env.NEATCONTEXT_HOST_KEY;
+    process.env.CLAUDE_PID = "48596";
+    configureHostPid(null);
+    try {
+      assert.equal(hostKey(), `pid-${process.ppid}`);
+    } finally {
+      configureHostPid(() => process.env.CLAUDE_PID);
+    }
+  });
+
+  it("survives an adapter whose pid lookup throws", () => {
+    delete process.env.NEATCONTEXT_HOST_KEY;
+    configureHostPid(() => {
+      throw new Error("host went away");
+    });
+    try {
+      assert.equal(hostKey(), `pid-${process.ppid}`);
+    } finally {
+      configureHostPid(() => process.env.CLAUDE_PID);
+    }
   });
 });
 

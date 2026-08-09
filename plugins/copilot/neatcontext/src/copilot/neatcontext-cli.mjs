@@ -20,8 +20,9 @@
 // Exit code is always 0: the output is meant to be read, not branched on.
 
 import { readFile, rm } from "node:fs/promises";
-import "./session.mjs";
-import { clearSelection, readSelection } from "../core/local-state.mjs";
+import { sessionIdentityIsShared, unusableSessionOverride, workspaceSessionId } from "./session.mjs";
+import { clearSelection, readSelection, sessionSelectionFilePath } from "../core/local-state.mjs";
+import { awaitBridgeSession, readBridgeSession, writeHostPointer } from "../core/host-session.mjs";
 import {
   createCapturedContext,
   createContext,
@@ -65,6 +66,109 @@ const CONTEXT_NOTE =
 
 function print(line = "") {
   process.stdout.write(`${line}\n`);
+}
+
+// This process is spawned for one command and its environment is fresh, so the
+// session it names is the session the user is actually in. The MCP bridge was
+// spawned once, when the window opened, and cannot know that a new session
+// replaced it. Recording it here is what lets the bridge read the selection this
+// command is about to write.
+//
+// Every command records it, not only the ones that write a selection. Copilot
+// ships no hooks, so this process is the only thing that can ever tell the
+// bridge what session the window is on — and a read-only command is often the
+// first one to run after a session changes, which makes it the earliest chance
+// to heal the pointer. One small rename is worth that.
+async function recordHostSession() {
+  return writeHostPointer(sessionId(), { source: "cli" }).catch(() => null);
+}
+
+// Whether the two halves of the plugin can agree on a session at all.
+//
+// Every other warning here assumes they can and reports a disagreement. This one
+// is about the case where there is no channel between them: a Copilot build that
+// publishes neither a session id nor its own pid leaves the bridge and this
+// process hashing their own working directories, which are not the same
+// directory. Nothing downstream can detect that, so it is said once, here.
+function hostIdentityWarning() {
+  if (sessionIdentityIsShared()) {
+    return null;
+  }
+  return (
+    "Warning: this Copilot build publishes no session identity to plugin processes, " +
+    "so NeatContext cannot tell which session its MCP server is serving. A connected " +
+    "context may not reach it. Set NEATCONTEXT_SESSION_ID to any short identifier to " +
+    "pin one, and report your Copilot version at " +
+    "https://github.com/XTSoftwareLabs/neatcontext-plugins/issues."
+  );
+}
+
+// A selection saved by a release that scoped Copilot to the workspace folder.
+//
+// Those releases wrote `plugin-sessions/copilot-ws-<digest>.json`, which nothing
+// reads once the host publishes a real session id. Saying so beats letting a
+// working connection look like it disappeared — and it is only said when this
+// workspace actually has one and nothing is connected now.
+async function workspaceSelectionHint(connected) {
+  if (connected) {
+    return null;
+  }
+  const workspace = workspaceSessionId();
+  if (sessionId() === workspace) {
+    return null;
+  }
+  try {
+    const saved = JSON.parse(await readFile(sessionSelectionFilePath(workspace), "utf8"));
+    const name = typeof saved?.contextName === "string" ? saved.contextName.trim() : "";
+    if (!name) {
+      return null;
+    }
+    return (
+      `An earlier version of this plugin connected "${name}" to this workspace rather ` +
+      "than to a session. Sessions each carry their own connection now, so reconnect " +
+      `it once with \`/neatcontext:use ${name}\`.`
+    );
+  } catch {
+    return null;
+  }
+}
+
+// Whether the bridge that will serve this session has caught up with it.
+//
+// The success message below is written from the record this process just wrote,
+// which is the one thing that cannot detect the failure this guards: a bridge
+// reading a different session's file would leave the message true about the disk
+// and false about the session. The bridge publishes what it resolved, so ask it.
+// A bridge that publishes nothing (an older build, or none running) is not
+// evidence of anything and gets no warning.
+//
+// This waits: a bridge that has not yet noticed the session change re-resolves
+// within its watch interval, so the first command after a change can take about
+// a second longer than the rest. Reporting drift that was about to resolve
+// itself would be worse than the wait.
+async function bridgeDriftWarning() {
+  const id = sessionId();
+  if (!id) {
+    return null;
+  }
+  const { state } = await awaitBridgeSession(id);
+  if (state !== "drifted") {
+    return null;
+  }
+  return (
+    "Warning: NeatContext's MCP server in this window is still serving an earlier " +
+    "session and has not picked this one up, so `get_context` may keep returning the " +
+    "previous context. Restart Copilot to clear it, and report it at " +
+    "https://github.com/XTSoftwareLabs/neatcontext-plugins/issues."
+  );
+}
+
+async function printBridgeDrift() {
+  const warning = await bridgeDriftWarning();
+  if (warning) {
+    print("");
+    print(warning);
+  }
 }
 
 // `--name value`, `--name=value`, and bare `--flag` booleans.
@@ -140,6 +244,19 @@ async function loadState() {
 
 async function commandStatus(state) {
   const { connected, selection } = state;
+  // First, because it changes what everything below is about: if the bridge is
+  // on another session, this is a report about a selection it is not reading.
+  // The ids themselves are not printed — the user cannot act on a session uuid,
+  // and the fact of the disagreement is the whole message.
+  const bridge = await readBridgeSession().catch(() => null);
+  if (bridge && bridge.sessionId !== sessionId()) {
+    print(
+      "Warning: NeatContext's MCP server in this window is serving an earlier session, " +
+        "not this one. What follows is what this session selected; `get_context` may " +
+        "still answer from the other one. Restart Copilot to clear it."
+    );
+    print("");
+  }
   const routing = await readRouting();
   const mode = resolveMode(routing, sessionId());
   // Reported alongside the connection because the two together are the whole
@@ -214,6 +331,11 @@ async function commandStatus(state) {
         "`/neatcontext:create`."
       : "No context is connected yet. Use `/neatcontext:use` to pick one."
   );
+  const upgrade = await workspaceSelectionHint(connected);
+  if (upgrade) {
+    print("");
+    print(upgrade);
+  }
   reportMode();
 }
 
@@ -384,6 +506,7 @@ async function commandUse(state, query) {
       "will be grounded in its domain profile and knowledge folder."
   );
   await nudgeForDescription(target);
+  await printBridgeDrift();
 }
 
 async function commandDisconnect(state) {
@@ -398,6 +521,9 @@ async function commandDisconnect(state) {
 
   const name = connected?.name ?? remembered.contextName;
   print(`Disconnected the "${name}" context from this session.`);
+  // Same exposure as connecting: a bridge on another session clears nothing the
+  // session it is serving can see.
+  await printBridgeDrift();
 }
 
 // A context with no routing description can only be routed to by name.
@@ -586,6 +712,7 @@ async function printSaveConnection(record) {
       "This session had no context connected, so it is now grounded in the one it " +
         "just saved. Your next messages will use its domain profile and knowledge folder."
     );
+    await printBridgeDrift();
     return;
   }
   print(`Use command: /neatcontext:use ${record.name}`);
@@ -858,6 +985,31 @@ async function commandExtensions(state, query, flags) {
 async function run() {
   const [command = "status", ...rest] = process.argv.slice(2);
   const { flags, query } = parseArgs(rest);
+
+  // Before anything reads a selection, because both of these say the session
+  // this command is about to act on may not be the one the user is in. They go
+  // to stderr so they cannot be mistaken for a command's result by whatever is
+  // relaying stdout verbatim.
+  const override = unusableSessionOverride();
+  if (override) {
+    process.stderr.write(
+      `NEATCONTEXT_SESSION_ID is set to something that cannot name a session file ` +
+        `(${override.length} characters, letters, digits, dot, dash and underscore only), ` +
+        "so it is being ignored.\n"
+    );
+  }
+  const identity = hostIdentityWarning();
+  if (identity) {
+    process.stderr.write(`${identity}\n`);
+  }
+
+  // Every invocation, not just the ones that change the selection. Copilot has
+  // no hook that runs when a session starts or ends, so this process is the only
+  // one that ever reports the current session to the long-lived bridge — and the
+  // report is worth making before a command writes a selection the bridge would
+  // otherwise never read, and after one, to heal a record something else wrote
+  // wrongly in between.
+  await recordHostSession();
 
   if (command === "create") {
     await commandCreate(flags);

@@ -33,8 +33,8 @@ copilot plugin install neatcontext@neatcontext
 ## Commands
 
 - `/neatcontext:save [name]` — save reusable work from the visible conversation.
-- `/neatcontext:use [name or number]` — connect or switch this workspace.
-- `/neatcontext:disconnect` — disconnect only this workspace.
+- `/neatcontext:use [name or number]` — connect or switch this session.
+- `/neatcontext:disconnect` — disconnect only this session.
 - `/neatcontext:list` — list the contexts on this machine.
 - `/neatcontext:status` — show the selection and routing mode.
 - `/neatcontext:create` — create a context around an existing knowledge folder.
@@ -47,9 +47,17 @@ copilot plugin install neatcontext@neatcontext
 
 - **Local Contexts.** The plugin stores Contexts on this machine. There is no
   NeatContext Desktop connection right now.
-- **Selections are per workspace.** Copilot does not expose a session identity
-  to plugin processes, so a connected context belongs to the workspace folder:
-  every Copilot session opened in that folder shares it.
+- **Selections are per session.** A connected context belongs to the Copilot
+  session that connected it, as on every other host. Where a Copilot build
+  publishes no session identity, the plugin falls back to the workspace folder,
+  every session opened there shares one selection, and `/neatcontext:status`
+  says so rather than leaving you to guess.
+- **Upgrading from 0.3.3 or earlier.** Those releases scoped every Copilot
+  selection to the workspace folder. The first time you run a command after
+  upgrading, this session has no connection of its own yet, so
+  `/neatcontext:status` reports none and names the context that workspace used
+  to be connected to. Reconnect it once with `/neatcontext:use` and each session
+  keeps its own from then on. Nothing is deleted.
 - **Saving is explicit.** Run `/neatcontext:save` when the visible conversation
   contains durable work worth preserving.
 

@@ -13,6 +13,7 @@ const files = [
   "extension-commands.mjs",
   "extension-runtime.mjs",
   "extensions.mjs",
+  "host-session.mjs",
   "local-state.mjs",
   "mcp-stdio-client.mjs",
   "routing.mjs",
