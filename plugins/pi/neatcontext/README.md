@@ -49,8 +49,9 @@ work on different contexts at once without disturbing each other.
 With a context connected, the model sees a one-line description of every other
 context on the machine and can move the session to a better one:
 
-- **ask** (default) — it proposes a switch and waits for you.
-- **auto** — it switches on a clear match and tells you it did.
+- **auto** (default) — it switches on a clear match and tells you it did, and
+  asks first when two contexts are close.
+- **ask** — it proposes a switch and waits for you.
 - **manual** — it never routes; `/neatcontext-use` only.
 
 Decline a switch once and it will not be suggested again in that session. When
