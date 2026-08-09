@@ -46,7 +46,7 @@
     "access": "public"
   },
   "scripts": {
-    "check": "node --check extensions/neatcontext.js && node --check src/pi/runtime.mjs && node --check src/pi/session.mjs && node --check src/core/context-store.mjs && node --check src/core/extension-bindings.mjs && node --check src/core/extension-commands.mjs && node --check src/core/extension-runtime.mjs && node --check src/core/extensions.mjs && node --check src/core/mcp-stdio-client.mjs && node --check src/core/local-state.mjs && node --check src/core/host-session.mjs && node --check src/core/conversation-evidence.mjs && node --check src/core/routing.mjs && node --check src/core/routing-search.mjs && node --check src/core/routing-candidates.mjs && node --check src/core/selection.mjs && node --check src/core/session.mjs && node --check src/core/storage-home.mjs",
+    "check": "node --check extensions/neatcontext.js && node --check src/pi/runtime.mjs && node --check src/pi/session.mjs && node --check src/core/context-store.mjs && node --check src/core/extension-bindings.mjs && node --check src/core/extension-commands.mjs && node --check src/core/extension-runtime.mjs && node --check src/core/extensions.mjs && node --check src/core/mcp-stdio-client.mjs && node --check src/core/local-state.mjs && node --check src/core/conversation-evidence.mjs && node --check src/core/routing.mjs && node --check src/core/routing-search.mjs && node --check src/core/routing-candidates.mjs && node --check src/core/selection.mjs && node --check src/core/session.mjs && node --check src/core/storage-home.mjs",
     "test": "node --test"
   }
 }

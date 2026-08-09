@@ -9,12 +9,10 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import {
   awaitBridgeSession,
   bridgePointerPath,
-  configureHostPid,
   hostKey,
   hostPointerPath,
   hostsDirectory,
   isProcessAlive,
-  normalizeHostKey,
   normalizeHostSessionId,
   publishBridgeSession,
   pruneHostPointers,
@@ -53,8 +51,6 @@ after(async () => {
 beforeEach(async () => {
   process.env.NEATCONTEXT_HOME = directory;
   process.env.NEATCONTEXT_HOST_KEY = "host-under-test";
-  // Core knows no host's variable by name; the adapter under test registers it.
-  configureHostPid(() => process.env.CLAUDE_PID);
   await rm(hostsDirectory(), { recursive: true, force: true });
 });
 
@@ -81,13 +77,6 @@ describe("what counts as a session id", () => {
 });
 
 describe("which host process this is", () => {
-  it("rejects an invalid pid provider", () => {
-    assert.throws(
-      () => configureHostPid("CLAUDE_PID"),
-      /host pid provider must be a function or null/
-    );
-  });
-
   it("takes the explicit key when the host or a test supplies one", () => {
     process.env.NEATCONTEXT_HOST_KEY = "window-7";
     assert.equal(hostKey(), "window-7");
@@ -97,12 +86,6 @@ describe("which host process this is", () => {
     for (const value of ["", "  ", "..", "a/b", "a\\b"]) {
       process.env.NEATCONTEXT_HOST_KEY = value;
       assert.equal(hostKey(), null, `accepted ${JSON.stringify(value)}`);
-    }
-  });
-
-  it("refuses a non-string explicit key", () => {
-    for (const value of [7, null, undefined, {}]) {
-      assert.equal(normalizeHostKey(value), null);
     }
   });
 
@@ -116,29 +99,6 @@ describe("which host process this is", () => {
     delete process.env.NEATCONTEXT_HOST_KEY;
     process.env.CLAUDE_PID = "not-a-pid";
     assert.equal(hostKey(), `pid-${process.ppid}`);
-  });
-
-  it("ignores a host variable no adapter registered, so one host cannot key on another", () => {
-    delete process.env.NEATCONTEXT_HOST_KEY;
-    process.env.CLAUDE_PID = "48596";
-    configureHostPid(null);
-    try {
-      assert.equal(hostKey(), `pid-${process.ppid}`);
-    } finally {
-      configureHostPid(() => process.env.CLAUDE_PID);
-    }
-  });
-
-  it("survives an adapter whose pid lookup throws", () => {
-    delete process.env.NEATCONTEXT_HOST_KEY;
-    configureHostPid(() => {
-      throw new Error("host went away");
-    });
-    try {
-      assert.equal(hostKey(), `pid-${process.ppid}`);
-    } finally {
-      configureHostPid(() => process.env.CLAUDE_PID);
-    }
   });
 });
 
@@ -175,13 +135,6 @@ describe("recording the session a host is on", () => {
     process.env.NEATCONTEXT_HOME = blocked;
     assert.equal(await writeHostPointer("session-a"), null);
     assert.equal(await publishBridgeSession("session-a"), false);
-  });
-
-  it("removes its temporary file when the atomic rename fails", async () => {
-    await mkdir(hostPointerPath(hostKey()), { recursive: true });
-
-    assert.equal(await writeHostPointer("session-a"), null);
-    assert.deepEqual(await readdir(hostsDirectory()), [`${hostKey()}.json`]);
   });
 });
 

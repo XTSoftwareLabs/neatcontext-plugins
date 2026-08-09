@@ -1,11 +1,6 @@
 // NeatContext plugin MCP server for GitHub Copilot.
 //
 // Behaviors kept from the Claude Code bridge:
-//   * this process outlives the session it was spawned in — a new session
-//     starts without restarting it — so the host session is re-resolved before
-//     every message rather than read once from the environment. Without that,
-//     the bridge goes on serving the previous session's context while the
-//     slash commands write the new one's.
 //   * initialize advertises tools.listChanged, and we poll the selected
 //     context so the host refreshes its tool list when the user runs
 //     /neatcontext:use (or the session routes itself).
@@ -15,7 +10,7 @@
 //     get_context instead of silently vanishing.
 
 import readline from "node:readline";
-import { publishSessionId, refreshSessionId } from "./session.mjs";
+import "./session.mjs";
 import { readSelection } from "../core/local-state.mjs";
 import {
   CONTEXT_MISSING_MESSAGE,
@@ -170,11 +165,11 @@ A context is whatever its profile says it is. Do not assume a subject area for i
 Cite the exact file path of anything you rely on. When the profile and the knowledge folder do not cover the question, say so instead of answering from general knowledge.`;
 
 // Written to survive being wrong. These instructions are fixed at the
-// handshake, but a context can be connected at any time afterwards — by a
-// slash command in this session, or by the session's routing. So this must
-// never state "nothing is connected" as a settled fact; it defers the current
-// state to get_context, which is the only thing that stays true.
-const NO_CONTEXT_INSTRUCTIONS = `No NeatContext Context was connected at the moment this session started. That says nothing about now: a Context can be connected at any point later in this session.
+// handshake, but a context can be connected at any time afterwards — from this
+// session or from another window on the same workspace. So this must never
+// state "nothing is connected" as a settled fact; it defers the current state
+// to get_context, which is the only thing that stays true.
+const NO_CONTEXT_INSTRUCTIONS = `No NeatContext Context was connected at the moment this session started. That says nothing about now: a Context can be connected at any time, from this session or another window on this workspace.
 
 These instructions are fixed at the handshake and cannot be updated, so they are not evidence about the current state — and you must not tell the user nothing is connected on the strength of this text.
 
@@ -474,38 +469,23 @@ function refusal(policy, target) {
 let started = false;
 let lastVersion = undefined;
 
-// Re-resolve which session this process is serving, and publish the answer so a
-// slash command can tell whether its write is the one this bridge will read.
-async function syncSession() {
-  await refreshSessionId();
-  await publishSessionId();
-}
-
 // What the host's tool list depends on. Switching between contexts has to
 // change this; so does the routing mode, because leaving manual has to make the
 // routing tools appear without waiting for a restart.
 async function currentVersion() {
-  // The session is part of it: a new session changes what this process is
-  // grounded in without changing anything the selection or the mode can report,
-  // and the host has to be told to drop the previous session's extension tools.
-  const session = sessionId() ?? "none";
   const mode = resolveMode(await readRouting(), sessionId());
   const context = await activeContext();
   // The extension signature is read from what the last resolve found, never by
   // starting anything: this runs on a timer, and a poll must not spawn a server.
   const extensions = extensionHost.signature(context?.record ?? null);
   if (context) {
-    return `${session}/${mode}/${context.missing ? "context:missing" : context.record.id}/${extensions}`;
+    return `${mode}/${context.missing ? "context:missing" : context.record.id}/${extensions}`;
   }
-  return `${session}/${mode}/none/${extensions}`;
+  return `${mode}/none/${extensions}`;
 }
 
 async function handleMessage(message) {
   const isNotification = message.id === undefined || message.id === null;
-  // Before anything reads a selection or a routing mode: which session this
-  // host is on may have changed since the last message, and every one of those
-  // is per session.
-  await syncSession();
 
   // Routing tools decide which context serves the session next, so they are
   // answered before that choice is read.
@@ -618,10 +598,6 @@ function startVersionWatch() {
   watching = true;
   setInterval(async () => {
     if (!started) return;
-    // The host does not send a message when the session changes underneath this
-    // process, so this tick is where that is noticed if nothing else asks first
-    // — and where the published answer stays fresh enough to be checked against.
-    await syncSession();
     const version = await currentVersion();
     if (version !== null && version !== lastVersion) {
       lastVersion = version;

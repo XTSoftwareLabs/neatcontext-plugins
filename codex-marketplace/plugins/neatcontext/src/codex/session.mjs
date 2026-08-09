@@ -13,17 +13,7 @@
 // stale copy. See core/host-session.mjs.
 
 import { configureSessionId } from "../core/session.mjs";
-import {
-  configureHostPid,
-  publishBridgeSession,
-  resolveHostSessionId
-} from "../core/host-session.mjs";
-
-// Codex publishes no pid of its own, so the pointer file is keyed on
-// `process.ppid` — which is Codex itself for the bridge and for the hooks and
-// CLI it spawns. Said explicitly rather than left to the default so that a
-// future reader knows it was considered.
-configureHostPid(null);
+import { publishBridgeSession, resolveHostSessionId } from "../core/host-session.mjs";
 
 // When this process started. A pointer older than this cannot be describing a
 // thread change that happened after it, and is therefore not about this host.

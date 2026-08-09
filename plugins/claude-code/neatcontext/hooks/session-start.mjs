@@ -19,10 +19,6 @@
 
 import { configureSessionId } from "../src/core/session.mjs";
 import { readSelection } from "../src/core/local-state.mjs";
-// Registers which environment variable names this host's process, so `hostKey()`
-// below resolves to the same pointer file the bridge and the slash commands use.
-// The session provider it installs is overridden explicitly further down.
-import "../src/claude/session.mjs";
 import {
   hostKey,
   pruneHostPointers,

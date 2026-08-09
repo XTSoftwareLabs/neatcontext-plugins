@@ -1,42 +1,40 @@
 // Which session the host process is on *right now*.
 //
 // A host that identifies its sessions through the environment has a problem the
-// rest of this plugin cannot see: the environment is a snapshot. Hosts spawn the
-// MCP bridge once and keep it for the life of the window, but the session
-// changes underneath it — starting a fresh conversation does not restart the
-// server — and the bridge's copy of the id is whatever it was at spawn. The
-// hooks and the slash-command CLI are spawned fresh and see the new one.
+// rest of this plugin cannot see: the environment is a snapshot. Codex spawns
+// the MCP bridge once and keeps it for the life of the window, but the thread
+// changes underneath it — `/new` starts a new thread in the same process — and
+// the bridge's copy of `CODEX_THREAD_ID` is whatever it was at spawn. The
+// SessionStart hook and the skill-run CLI are spawned fresh and see the new one.
 //
 // So the two halves of the plugin end up reading and writing different files:
-// `use` writes the selection for the session the user is in, the bridge keeps
-// serving the session the window started in, and nothing in either path can
-// observe the disagreement. The user is told a context is connected and every
-// later answer is grounded in a different one.
+// `$neatcontext:use` writes the selection for the thread the user is in, the
+// bridge keeps serving the thread the window started in, and nothing in either
+// path can observe the disagreement. The user is told a context is connected and
+// every later answer is grounded in a different one.
 //
 // This module is the missing channel. One pointer file per host *process*,
-// written by whichever short-lived process was just handed the current session
+// written by whichever short-lived process was just handed the current thread
 // id, and re-read by the long-lived one on every message:
 //
 //   ~/.neatcontext/plugin-hosts/<hostKey>.json   { sessionId, source, updatedAt }
 //
-// The host key has to be stable across a session change and distinct per window,
-// which rules out the session id and the working directory both. What is left is
-// the host process itself. How to name it is the one thing that differs per
-// host, so each adapter registers its own answer with `configureHostPid()`: some
-// hosts publish their own pid to every process they spawn, and a host that
-// publishes nothing falls back to `process.ppid`, which is the host for any
-// process it spawned directly. A process whose parent is not the host and whose
-// host publishes no pid — a CLI running inside a shell tool — computes a key
-// nothing else reads, and its writes are harmless and swept later.
+// The host key has to be stable across a thread change and distinct per window,
+// which rules out the thread id and the working directory both. What is left is
+// the host process itself: the bridge and the SessionStart hook are spawned by
+// Codex directly, so `process.ppid` is the same number in both. Two windows are
+// two pids and never share a pointer. A process whose parent is not the host —
+// the CLI runs inside Codex's shell tool — computes a key nothing else reads,
+// and its writes are harmless and swept later.
 //
 // The bridge also publishes what it actually resolved:
 //
 //   ~/.neatcontext/plugin-hosts/<hostKey>.bridge.json  { pid, sessionId, updatedAt }
 //
-// That is what lets `use` check its own success against the process that will
-// serve it, instead of against the file it just wrote itself.
+// That is what lets `$neatcontext:use` check its own success against the process
+// that will serve it, instead of against the file it just wrote itself.
 
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { neatContextHome } from "./storage-home.mjs";
 
@@ -62,70 +60,24 @@ function pidKey(value) {
   return /^[1-9][0-9]{0,9}$/.test(pid) ? `pid-${pid}` : null;
 }
 
-// Where the host publishes its own process id, when it publishes one at all.
-//
-// Deliberately per adapter rather than a list of every host's variable checked
-// in turn: those variables are inherited by child processes, so a host launched
-// from another host's shell would key on the outer host and two different hosts
-// could end up sharing one pointer file. Each adapter consults only the variable
-// its own host sets.
-//
-// Process-global, because one process runs one host's adapter. A test that
-// imported two adapters into the same process would have the second silently
-// win; there is no such test, and there should not be one.
-let hostPidProvider = null;
-
-export function configureHostPid(provider) {
-  if (provider !== null && typeof provider !== "function") {
-    throw new TypeError("The host pid provider must be a function or null.");
-  }
-  hostPidProvider = provider;
-}
-
-function hostPid() {
-  if (!hostPidProvider) {
-    return null;
-  }
-  // An adapter reading a value the host never set must not take down the only
-  // path that can name this process's host.
-  try {
-    return hostPidProvider();
-  } catch {
-    return null;
-  }
-}
-
-// A host key names one directory entry, so it is held to the same rule as
-// anything else that becomes a path segment. Exported because an adapter that
-// wants to know whether a shared key is available has to ask the same question
-// this does — a value accepted there and rejected here would claim a channel
-// that was never opened.
-export function normalizeHostKey(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 &&
-    trimmed !== "." &&
-    trimmed !== ".." &&
-    !trimmed.includes("/") &&
-    !trimmed.includes("\\")
-    ? trimmed
-    : null;
-}
-
 // The host process this process belongs to.
 //
 // NEATCONTEXT_HOST_KEY is the explicit form, for tests and for any host that can
-// hand every one of its plugin processes the same identifier. Otherwise the pid
-// the adapter knows how to find, and failing that `process.ppid`, which is the
-// host for a server or hook it spawned directly.
+// hand every one of its plugin processes the same identifier. Otherwise
+// `process.ppid`: the bridge and the hooks are spawned by the Codex process
+// directly, so both see the host's pid there. Codex publishes no pid of its own
+// the way Claude Code publishes CLAUDE_PID, so a process spawned through a shell
+// keys on the shell — a key nothing long-lived reads, which fails safe.
 export function hostKey() {
   const explicit = process.env.NEATCONTEXT_HOST_KEY;
   if (typeof explicit === "string") {
-    return normalizeHostKey(explicit);
+    const trimmed = explicit.trim();
+    return trimmed.length > 0 && trimmed !== "." && trimmed !== ".." && !trimmed.includes("/") &&
+      !trimmed.includes("\\")
+      ? trimmed
+      : null;
   }
-  return pidKey(hostPid()) ?? pidKey(process.ppid);
+  return pidKey(process.ppid);
 }
 
 export function hostsDirectory() {
@@ -161,31 +113,12 @@ async function readPointer(file) {
   }
 }
 
-let writeCounter = 0;
-
-// Written to a temporary name and renamed into place, because these files are
-// read by other processes while they are being written: the bridge re-reads the
-// pointer on every message, and a reader that catches a half-written file falls
-// back to the environment, which is the stale answer this file exists to
-// correct. A rename is atomic, so a reader sees the old record or the new one.
-//
-// The temporary name carries this process's pid so that two processes writing
-// the same pointer at once cannot collide on it, and stays in the same directory
-// so the rename never crosses a volume.
 async function writePointer(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
-  writeCounter += 1;
-  const temporary = `${file}.${process.pid}.${writeCounter}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600
-    });
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
 }
 
 export async function readHostPointer(key = hostKey()) {
@@ -250,11 +183,6 @@ export async function resolveHostSessionId(envSessionId, { since = 0, key = host
 // rewriting. Age is not staleness here — a record from an hour ago is still what
 // this bridge is serving. Whether it is *running* is a question about its pid,
 // which the record carries.
-//
-// The cache is what this process last wrote, not what is on disk. Something that
-// deleted the file from underneath it would not get it back until the session
-// changes; nothing here does that, and defending against an outside `rm` would
-// cost a stat on every message.
 let lastPublished = { id: undefined };
 
 export async function publishBridgeSession(id, { key = hostKey(), now = Date.now() } = {}) {

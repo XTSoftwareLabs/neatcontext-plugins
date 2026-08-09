@@ -2,7 +2,8 @@
 // reused verbatim, commands ported, and a local Context adapter in src/copilot.
 // These tests pin the fork's contracts: what must stay byte-identical to
 // claude-code, how
-// sessions scope to workspaces on hosts that expose no session identity, and
+// sessions use the identity Copilot exposes, fall back to workspaces when a
+// host exposes none, and
 // that nothing here runs on its own.
 
 import assert from "node:assert/strict";
@@ -186,23 +187,13 @@ function toolCall(id, name, args = {}) {
 }
 
 // One isolated NeatContext home per test.
-//
-// The host variables are blanked rather than inherited: this suite runs *inside*
-// a Copilot session on a developer machine, and a real COPILOT_AGENT_SESSION_ID
-// leaking into every child would silently replace the identity under test. An
-// empty value is "not set" everywhere it is read, so each test exercises the
-// same fallbacks a clean host would. The host key is pinned per home so the
-// pointer files of two tests running concurrently cannot collide.
 async function isolatedHome(prefix) {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
   return {
     directory,
     env: {
       NEATCONTEXT_HOME: directory,
-      NEATCONTEXT_SESSION_ID: "",
-      COPILOT_AGENT_SESSION_ID: "",
-      COPILOT_LOADER_PID: "",
-      NEATCONTEXT_HOST_KEY: `test-${path.basename(directory)}`
+      COPILOT_AGENT_SESSION_ID: ""
     }
   };
 }
@@ -571,7 +562,11 @@ test("Copilot sessions scope to the workspace when no session id is provided", a
   const workspaceB = await mkdtemp(path.join(os.tmpdir(), "copilot-ws-b-"));
   // An empty override is "not set": the runs below must fall through to the
   // workspace digest even when the test runner's own environment carries ids.
-  const wsEnv = { ...home.env, NEATCONTEXT_SESSION_ID: "" };
+  const wsEnv = {
+    ...home.env,
+    NEATCONTEXT_SESSION_ID: "",
+    COPILOT_AGENT_SESSION_ID: ""
+  };
 
   await createContext(home, "workspace scoped");
 
@@ -593,6 +588,45 @@ test("Copilot sessions scope to the workspace when no session id is provided", a
   assert.match(modeA.stdout, /now auto for this session/);
   const modeB = await runNode(cli, ["mode"], { env: wsEnv, cwd: workspaceB });
   assert.match(modeB.stdout, /auto \(the default\)/);
+});
+
+test("Copilot CLI and MCP bridge share the host session across working directories", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-session-");
+  const commandWorkspace = await mkdtemp(path.join(os.tmpdir(), "copilot-command-ws-"));
+  const bridgeWorkspace = await mkdtemp(path.join(os.tmpdir(), "copilot-bridge-ws-"));
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+    await Promise.all(
+      [home.directory, commandWorkspace, bridgeWorkspace].map((directory) =>
+        rm(directory, { recursive: true, force: true })
+      )
+    );
+  });
+  const env = {
+    ...home.env,
+    NEATCONTEXT_SESSION_ID: "",
+    COPILOT_AGENT_SESSION_ID: "copilot-agent-session-a"
+  };
+
+  await createContext(home, "shared session");
+  const connect = await runNode(cli, ["use", "shared session"], {
+    env,
+    cwd: commandWorkspace
+  });
+  assert.match(connect.stdout, /Connected the "shared session" context/);
+
+  const session = rpcSession(env, { cwd: bridgeWorkspace });
+  sessions.push(session);
+  await session.call(initialize(1));
+  const grounded = await session.call(toolCall(2, "get_context"));
+  assert.match(grounded.result.content[0].text, /connected context: shared session/i);
+
+  const otherSession = await runNode(cli, ["status"], {
+    env: { ...env, COPILOT_AGENT_SESSION_ID: "copilot-agent-session-b" },
+    cwd: commandWorkspace
+  });
+  assert.match(otherSession.stdout, /No context is connected yet/);
 });
 
 test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {

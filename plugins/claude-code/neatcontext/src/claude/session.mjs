@@ -13,17 +13,7 @@
 // commands correct the stale copy. See core/host-session.mjs.
 
 import { configureSessionId } from "../core/session.mjs";
-import {
-  configureHostPid,
-  publishBridgeSession,
-  resolveHostSessionId
-} from "../core/host-session.mjs";
-
-// Claude Code sets CLAUDE_PID in the environment of every process it spawns —
-// including the shell a slash command runs in, where `process.ppid` is the shell
-// rather than the host. Without it the CLI would key on the shell and write a
-// pointer the bridge never reads.
-configureHostPid(() => process.env.CLAUDE_PID);
+import { publishBridgeSession, resolveHostSessionId } from "../core/host-session.mjs";
 
 // When this process started. A pointer older than this cannot be describing a
 // session change that happened after it, and is therefore not about this host.

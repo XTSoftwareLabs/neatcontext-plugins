@@ -47,17 +47,11 @@ copilot plugin install neatcontext@neatcontext
 
 - **Local Contexts.** The plugin stores Contexts on this machine. There is no
   NeatContext Desktop connection right now.
-- **Selections are per session.** A connected context belongs to the Copilot
-  session that connected it, as on every other host. Where a Copilot build
-  publishes no session identity, the plugin falls back to the workspace folder
-  and every session opened there shares one selection. It says so when that
-  happens, rather than leaving you to guess.
-- **Upgrading from 0.3.3 or earlier.** Those releases scoped every Copilot
-  selection to the workspace folder. The first time you run a command after
-  upgrading, this session has no connection of its own yet, so
-  `/neatcontext:status` reports none and names the context that workspace used
-  to be connected to. Reconnect it once with `/neatcontext:use` and each session
-  keeps its own from then on. Nothing is deleted.
+- **Selections are per session on Copilot CLI.** The command and MCP processes
+  use Copilot's shared session identity, so they agree even when they start in
+  different working directories.
+- **Workspace fallback.** On a host that does not expose a session identity,
+  sessions opened in the same workspace share one selection.
 - **Saving is explicit.** Run `/neatcontext:save` when the visible conversation
   contains durable work worth preserving.
 

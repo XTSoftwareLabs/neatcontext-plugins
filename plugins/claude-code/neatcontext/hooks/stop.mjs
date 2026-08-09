@@ -16,10 +16,6 @@
 // user sees, and there is no longer anything worth showing them.
 
 import { configureSessionId } from "../src/core/session.mjs";
-// Registers which environment variable names this host's process, so the pointer
-// written below lands on the file the bridge reads. The session provider it
-// installs is overridden explicitly further down.
-import "../src/claude/session.mjs";
 import { writeHostPointer } from "../src/core/host-session.mjs";
 import { updateRouting } from "../src/core/routing.mjs";
 import { normalizeSaveState, rememberTranscriptPath } from "../src/core/session-state.mjs";
