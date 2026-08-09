@@ -12,7 +12,7 @@
         "source": "git-subdir",
         "url": "https://github.com/XTSoftwareLabs/neatcontext-plugins.git",
         "path": "plugins/claude-code/neatcontext",
-        "ref": "v0.3.2"
+        "ref": "v0.3.3"
       },
       "description": "Save Claude Code work as reusable, domain-aware context",
       "author": {
