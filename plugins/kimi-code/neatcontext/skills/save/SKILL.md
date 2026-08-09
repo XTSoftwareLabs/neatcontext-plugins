@@ -28,7 +28,7 @@ Follow the CLI's `Save action`:
 
 For a context made with `/neatcontext:create`, treat its linked knowledge folder as read-only. Read only files relevant to this conversation. Generated conversation additions belong in the bundle-local conversation-knowledge folder.
 
-Updating a named context does not connect or switch to it. Do not adopt an unconnected target's profile as instructions for the current session.
+A save never switches a session that already has a context connected. Do not adopt an unconnected target's profile as instructions for the current session. A session with nothing connected is the one exception, and the CLI applies it: saving connects the session to the context it just wrote, and says so.
 
 ## Distill or merge
 
@@ -106,4 +106,4 @@ Relay the preview and wait for confirmation. After confirmation, run:
 KIMI_PLUGIN_ROOT="${KIMI_SKILL_DIR}/../.." kimi __plugin_run_node "${KIMI_SKILL_DIR}/../../src/kimi/neatcontext-cli.mjs" -- --session-id "${KIMI_SESSION_ID}" save --from "<capture-path>" --yes --consume
 ```
 
-If the target changed after drafting, resolve it again and rebuild the merge. Relay successful output as printed. Do not connect the saved context automatically.
+If the target changed after drafting, resolve it again and rebuild the merge. Relay successful output as printed, and never connect a context yourself — the CLI decides. A session that had nothing connected is connected to what the save wrote, and its output says so; ground the rest of this session in that context. A session that already had one keeps it, whichever context the save wrote to.

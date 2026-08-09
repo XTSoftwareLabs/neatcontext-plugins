@@ -474,6 +474,84 @@ test("Copilot CLI serves local Contexts", async (t) => {
 
 });
 
+// Saving is where a workspace with nothing connected gets its context, and
+// where a workspace that has one must not be moved off it.
+test("Copilot save connects an unconnected workspace and leaves a connected one", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-save-");
+  t.after(() => rm(home.directory, { recursive: true, force: true }));
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: "copilot-save" };
+
+  const capture = (name, overrides = {}) => ({
+    schema: 1,
+    name,
+    profile:
+      `# ${name}\n\n## Purpose\nPreserve the Copilot work.\n\n` +
+      "## What to do\nUse the recorded decisions.\n\n" +
+      "## What to avoid\nDo not invent state.\n\n" +
+      "## Behavior\nSeparate verified facts from open work.",
+    routingDescription: `Questions about ${name}`,
+    knowledge: [{ path: "session-summary.md", content: `# Session summary\n\n${name} is saved.` }],
+    ...overrides
+  });
+
+  const write = async (file, value) => {
+    const target = path.join(home.directory, file);
+    await writeFile(target, JSON.stringify(value), "utf8");
+    return target;
+  };
+
+  const first = await runNode(
+    cli,
+    ["save", "--from", await write("first.json", capture("Copilot Capture")), "--consume"],
+    { env }
+  );
+  assert.match(first.stdout, /Connected context: Copilot Capture/);
+  assert.match(
+    (await runNode(cli, ["status"], { env })).stdout,
+    /Connected context: Copilot Capture/
+  );
+
+  // Save As, from a workspace that is already grounded.
+  const second = await runNode(
+    cli,
+    ["save", "--from", await write("second.json", capture("Copilot Second")), "--consume"],
+    { env }
+  );
+  assert.match(second.stdout, /Use command: \/neatcontext:use Copilot Second/);
+  assert.match(second.stdout, /stays connected to "Copilot Capture"/);
+  assert.match(
+    (await runNode(cli, ["status"], { env })).stdout,
+    /Connected context: Copilot Capture/
+  );
+
+  // An update of the connected context leaves the connection exactly as it was.
+  const target = await runNode(cli, ["save-target", "Copilot Capture"], { env });
+  const field = (label) => new RegExp(`^${label}: (.+)$`, "m").exec(target.stdout)?.[1].trim();
+  const updated = await runNode(
+    cli,
+    [
+      "save",
+      "--from",
+      await write(
+        "update.json",
+        capture("Copilot Capture", {
+          targetId: field("Context id"),
+          baseHash: field("Base hash"),
+          knowledge: [
+            { path: "session-summary.md", content: "# Session summary\n\nThe fix is verified." }
+          ]
+        })
+      ),
+      "--yes",
+      "--consume"
+    ],
+    { env }
+  );
+  assert.match(updated.stdout, /Updated context: Copilot Capture/);
+  assert.match(updated.stdout, /Use command: \/neatcontext:use Copilot Capture/);
+  assert.doesNotMatch(updated.stdout, /stays connected to/);
+});
+
 test("Copilot sessions scope to the workspace when no session id is provided", async (t) => {
   const home = await isolatedHome("neatcontext-copilot-ws-");
   const workspaceA = await mkdtemp(path.join(os.tmpdir(), "copilot-ws-a-"));

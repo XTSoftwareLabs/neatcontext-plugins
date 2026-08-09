@@ -25,8 +25,10 @@ returns:
 - `choose` — show the possible matches and wait for the user to choose.
 - `unavailable` — relay the reason and ask for a new context name.
 
-Updating a named context does not connect or switch to it. Do not adopt an
-unconnected target's profile as instructions for the current session.
+A save never switches a session that already has a context connected. Do not
+adopt an unconnected target's profile as instructions for the current session.
+A session with nothing connected is the one exception, and the tool applies it:
+saving connects the session to the context it just wrote, and says so.
 
 ## Distill or merge
 
@@ -106,5 +108,8 @@ nothing. Relay the preview and wait. Only after the user agrees, call it again
 with the same arguments plus `confirm: true`.
 
 If the tool reports that the target changed after you drafted, resolve the
-destination again and rebuild the merge. Relay successful output as printed. Do
-not connect the saved context automatically.
+destination again and rebuild the merge. Relay successful output as printed, and
+never connect a context yourself — the tool decides. A session that had nothing
+connected is connected to what the save wrote, and its output says so; ground the
+rest of this session in that context. A session that already had one keeps it,
+whichever context the save wrote to.

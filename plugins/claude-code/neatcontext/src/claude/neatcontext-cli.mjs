@@ -61,7 +61,12 @@ import {
   renderEvidenceOverview,
   renderEvidenceSearch
 } from "../core/conversation-evidence.mjs";
-import { applySelection, disconnectSelection, resolveContext } from "../core/selection.mjs";
+import {
+  applySelection,
+  connectAfterSave,
+  disconnectSelection,
+  resolveContext
+} from "../core/selection.mjs";
 import { readClaudeTranscriptEvidence } from "./conversation-evidence.mjs";
 
 const CONTEXT_NOTE =
@@ -706,6 +711,29 @@ function printUpdatePreview(preview) {
   print("Re-run this save with --yes to confirm.");
 }
 
+// Where this session stands once the save has landed. An unconnected session
+// adopts what it just wrote; a connected one is told, in the same breath as the
+// `use` line, that it was left alone on purpose.
+async function printSaveConnection(record) {
+  const outcome = await connectAfterSave(record).catch(() => null);
+  if (outcome?.connected) {
+    print(`Connected context: ${record.name}`);
+    print(
+      "This session had no context connected, so it is now grounded in the one it " +
+        "just saved. Your next messages will use its domain profile and knowledge folder."
+    );
+    await printBridgeDrift();
+    return;
+  }
+  print(`Use command: /neatcontext:use ${record.name}`);
+  if (outcome && outcome.contextId !== record.id) {
+    print(
+      `This session stays connected to "${outcome.contextName}" — a save records work, ` +
+        "it does not switch the context you are working in."
+    );
+  }
+}
+
 async function commandSave(flags) {
   const source = typeof flags.from === "string" ? flags.from : "";
   if (source.trim().length === 0) {
@@ -753,7 +781,7 @@ async function commandSave(flags) {
       if (!result.record.knowledgeManaged) {
         print(`Conversation knowledge folder: ${result.record.conversationKnowledgeFolder}`);
       }
-      print(`Use command: /neatcontext:use ${result.record.name}`);
+      await printSaveConnection(result.record);
       return;
     }
 
@@ -769,7 +797,7 @@ async function commandSave(flags) {
     print(`Context folder: ${result.record.directory}`);
     print(`Profile path: ${result.record.profilePath}`);
     print(`Knowledge folder: ${result.record.knowledgeFolder}`);
-    print(`Use command: /neatcontext:use ${result.record.name}`);
+    await printSaveConnection(result.record);
   } catch (error) {
     if (error instanceof ContextError) {
       print(error.message);

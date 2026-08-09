@@ -184,7 +184,8 @@ test("Codex saves conversation provenance without touching a transcript", async 
 
   const result = await runNode(cli, ["save", "--from", capturePath, "--consume"], { env });
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /Use command: \$neatcontext:use Codex smoke context/);
+  // Nothing was connected to this thread, so the save is also the connection.
+  assert.match(result.stdout, /Connected context: Codex smoke context/);
 
   const contextEntries = await readdir(path.join(home, "contexts"));
   assert.equal(contextEntries.length, 1);
@@ -194,6 +195,33 @@ test("Codex saves conversation provenance without touching a transcript", async 
   assert.equal(manifest.schema, 2);
   assert.equal(manifest.kind, undefined);
   assert.equal(manifest.capturedFrom, "codex-conversation");
+
+  // Updating the context this thread is on leaves the connection where it is.
+  const target = await runNode(cli, ["save-target", "Codex smoke context"], { env });
+  const field = (label) => new RegExp(`^${label}: (.+)$`, "m").exec(target.stdout)?.[1].trim();
+  await writeFile(
+    capturePath,
+    JSON.stringify({
+      schema: 1,
+      name: "Codex smoke context",
+      targetId: field("Context id"),
+      baseHash: field("Base hash"),
+      profile:
+        "# Codex smoke context\n\n## Purpose\nTest Codex capture.\n\n## What to do\nUse the saved facts.\n\n## What to avoid\nDo not invent facts.\n\n## Behavior\nBe concise.",
+      routingDescription: "Use for Codex plugin smoke-test requests.",
+      knowledge: [
+        {
+          path: "session-summary.md",
+          content: "# Session summary\n\nThe Codex update path works too."
+        }
+      ]
+    }),
+    "utf8"
+  );
+  const updated = await runNode(cli, ["save", "--from", capturePath, "--yes", "--consume"], { env });
+  assert.match(updated.stdout, /Updated context: Codex smoke context/);
+  assert.match(updated.stdout, /Use command: \$neatcontext:use Codex smoke context/);
+  assert.doesNotMatch(updated.stdout, /stays connected to/);
 
   const connected = await runNode(cli, ["use", "Codex smoke context"], { env });
   assert.match(connected.stdout, /Connected the "Codex smoke context" context/);
@@ -294,7 +322,16 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     }),
     "utf8"
   );
-  assert.equal((await runNode(cli, ["save", "--from", capturePath, "--consume"], { env })).code, 0);
+  // Saved from another thread on purpose: a save connects the thread it ran in,
+  // and this test needs "selected-thread" to start with nothing selected.
+  assert.equal(
+    (
+      await runNode(cli, ["save", "--from", capturePath, "--consume"], {
+        env: { ...env, CODEX_THREAD_ID: "authoring-thread" }
+      })
+    ).code,
+    0
+  );
 
   const hookInput = JSON.stringify({
     session_id: "selected-thread",

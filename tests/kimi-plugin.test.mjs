@@ -354,6 +354,86 @@ test("Kimi CLI requires a safe session id and isolates routing and selection", a
   assert.deepEqual(sessionFiles, ["kimi-session-a.json"]);
 });
 
+// Saving is where a session with nothing connected gets its context, and where
+// a session that has one must not be moved off it.
+test("Kimi save connects an unconnected session and leaves a connected one", async (t) => {
+  const home = await localHome("neatcontext-kimi-save-");
+  t.after(() => rm(home.directory, { recursive: true, force: true }));
+  const env = home.env;
+  const session = ["--session-id", "kimi-save"];
+
+  const capture = (name, overrides = {}) => ({
+    schema: 1,
+    name,
+    profile:
+      `# ${name}\n\n## Purpose\nPreserve the payment work.\n\n` +
+      "## What to do\nUse the recorded decisions.\n\n" +
+      "## What to avoid\nDo not invent state.\n\n" +
+      "## Behavior\nSeparate verified facts from open work.",
+    routingDescription: `Questions about ${name}`,
+    knowledge: [{ path: "session-summary.md", content: `# Session summary\n\n${name} is saved.` }],
+    ...overrides
+  });
+
+  const write = async (file, value) => {
+    const target = path.join(home.directory, file);
+    await writeFile(target, JSON.stringify(value), "utf8");
+    return target;
+  };
+
+  const first = await runNode(
+    cli,
+    [...session, "save", "--from", await write("first.json", capture("Kimi Capture")), "--consume"],
+    { env }
+  );
+  assert.match(first.stdout, /Connected context: Kimi Capture/);
+  assert.match(
+    (await runNode(cli, [...session, "status"], { env })).stdout,
+    /Connected context: Kimi Capture/
+  );
+
+  // Save As, from a session that is already grounded.
+  const second = await runNode(
+    cli,
+    [...session, "save", "--from", await write("second.json", capture("Kimi Second")), "--consume"],
+    { env }
+  );
+  assert.match(second.stdout, /Use command: \/neatcontext:use Kimi Second/);
+  assert.match(second.stdout, /stays connected to "Kimi Capture"/);
+  assert.match(
+    (await runNode(cli, [...session, "status"], { env })).stdout,
+    /Connected context: Kimi Capture/
+  );
+
+  // An update of the connected context leaves the connection exactly as it was.
+  const target = await runNode(cli, [...session, "save-target", "Kimi Capture"], { env });
+  const field = (label) => new RegExp(`^${label}: (.+)$`, "m").exec(target.stdout)?.[1].trim();
+  const updated = await runNode(
+    cli,
+    [
+      ...session,
+      "save",
+      "--from",
+      await write(
+        "update.json",
+        capture("Kimi Capture", {
+          targetId: field("Context id"),
+          baseHash: field("Base hash"),
+          knowledge: [
+            { path: "session-summary.md", content: "# Session summary\n\nThe fix is verified." }
+          ]
+        })
+      ),
+      "--yes",
+      "--consume"
+    ],
+    { env }
+  );
+  assert.match(updated.stdout, /Updated context: Kimi Capture/);
+  assert.match(updated.stdout, /Use command: \/neatcontext:use Kimi Capture/);
+  assert.doesNotMatch(updated.stdout, /stays connected to/);
+});
+
 test("Kimi MCP bridge exposes nothing session-dependent until binding", async (t) => {
   const home = await localHome("neatcontext-kimi-mcp-");
   const sessions = [];

@@ -190,7 +190,7 @@ function openSession() {
 }
 
 describe("saving the current conversation", () => {
-  it("creates a self-contained context without connecting it", async () => {
+  it("creates a self-contained context and connects the session that had none", async () => {
     const { file, output } = await saveCapture(validCapture());
     const bundle = bundleFrom(output);
 
@@ -198,10 +198,12 @@ describe("saving the current conversation", () => {
       `Context folder: ${bundle}`,
       `Profile path: ${path.join(bundle, "profile.md")}`,
       `Knowledge folder: ${path.join(bundle, "knowledge")}`,
-      "Use command: /neatcontext:use Conversation Capture"
+      "Connected context: Conversation Capture",
+      "This session had no context connected, so it is now grounded in the one it " +
+        "just saved. Your next messages will use its domain profile and knowledge folder."
     ]);
     await assert.rejects(readFile(file, "utf8"), { code: "ENOENT" });
-    assert.match(await cli("status"), /No context is connected yet/);
+    assert.match(await cli("status"), /Connected context: Conversation Capture/);
 
     const manifest = JSON.parse(await readFile(path.join(bundle, "context.json"), "utf8"));
     assert.equal(manifest.schema, 2);
@@ -218,6 +220,54 @@ describe("saving the current conversation", () => {
       await readFile(path.join(bundle, "knowledge", "implementation", "decisions.md"), "utf8"),
       `${validCapture().knowledge[1].content}\n`
     );
+  });
+
+  // The whole rule, in one place: a save connects a session that has nothing,
+  // and never moves a session that has something. Save As is the case that
+  // would otherwise re-ground a conversation the user is still having.
+  it("leaves a connected session on the context it is already working in", async () => {
+    await saveCapture();
+    assert.match(await cli("status"), /Connected context: Conversation Capture/);
+
+    const second = await saveCapture(
+      validCapture({
+        name: "Second Capture",
+        profile:
+          "# Second Capture\n\n## Purpose\nPreserve the refund work.\n\n" +
+          "## What to do\nUse the recorded decisions.\n\n" +
+          "## What to avoid\nDo not invent deployment state.\n\n" +
+          "## Behavior\nSeparate verified facts from open work.",
+        routingDescription: "Refund reversals, ledger corrections, and REF-* tickets"
+      })
+    );
+
+    assert.match(second.output, /Use command: \/neatcontext:use Second Capture/);
+    assert.match(second.output, /stays connected to "Conversation Capture"/);
+    assert.match(await cli("status"), /Connected context: Conversation Capture/);
+    assert.match(await cli("list"), /Second Capture/);
+  });
+
+  it("connects the session to a context it updated when nothing was connected", async () => {
+    await saveCapture();
+    await cli("disconnect");
+    assert.match(await cli("status"), /No context is connected yet/);
+
+    const target = await cli("save-target", "Conversation Capture");
+    const file = await writeCapture(
+      updateCaptureFrom(target, {
+        knowledge: [
+          {
+            path: "session-summary.md",
+            content: "# Session summary\n\nRetry backoff is deployed and verified."
+          }
+        ]
+      })
+    );
+
+    const updated = await cli("save", "--from", file, "--yes");
+    assert.match(updated, /Updated context: Conversation Capture/);
+    assert.match(updated, /Connected context: Conversation Capture/);
+    assert.match(await cli("status"), /Connected context: Conversation Capture/);
   });
 
   it("remains routable from its portable manifest when the local routing cache is empty", async () => {
@@ -303,7 +353,9 @@ describe("saving the current conversation", () => {
     assert.match(await cli("save-target", "Fresh Context"), /Save action: create/);
 
     await saveCapture();
-    assert.match(await cli("save-target"), /Save action: create/);
+    // The save connected this session, so a second nameless save is Save, not
+    // Save As: it updates the context the conversation is now working in.
+    assert.match(await cli("save-target"), /Save action: update/);
     assert.match(await cli("save-target", "conversation capture"), /Save action: update/);
     assert.match(await cli("save-target", "Conversation"), /Save action: choose/);
     assert.match(await cli("save-target", "Conversaton Capture"), /Save action: choose/);
@@ -920,6 +972,9 @@ describe("exporting a captured context", () => {
 
   it("exports the connected context when no name is given, and asks when none is", async () => {
     await saveCapture();
+    // The save connected this session; export has to be asked with nothing
+    // connected for the question below to be the one under test.
+    await cli("disconnect");
     const destination = path.join(home, "exports-connected");
 
     assert.match(await cli("export", "--to", destination), /Which context should I export\?/);
@@ -1003,7 +1058,8 @@ describe("the Claude-facing save workflow", () => {
     assert.match(saveCommand, /save --from .* --yes/);
     assert.match(saveCommand, /linked knowledge folder is\s+read-only/);
     assert.match(saveCommand, /removes the scratch JSON only after a successful create/);
-    assert.match(saveCommand, /Do not connect a new or named context\s+automatically/);
+    assert.match(saveCommand, /never connect a context yourself/);
+    assert.match(saveCommand, /A session that already had one keeps it/);
     assert.match(createCommand, /fresh context/);
     assert.match(createCommand, /\/neatcontext:save/);
     assert.match(importCommand, /source bundle is read-only/);
