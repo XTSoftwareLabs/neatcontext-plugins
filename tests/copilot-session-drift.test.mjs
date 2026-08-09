@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { closeSession } from "./process-helpers.mjs";
+import { workspaceSessionId } from "../plugins/copilot/neatcontext/src/copilot/session.mjs";
 
 const plugin = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -355,6 +356,26 @@ describe("a host that publishes no identity at all", () => {
     // it names the pointer file both halves share.
     const withKey = await cli(["status"]);
     assert.doesNotMatch(withKey, /publishes no session identity/);
+
+    const withPid = await new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [path.join(copilot, "neatcontext-cli.mjs"), "status"],
+        {
+          cwd: workspace,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...childEnv({}),
+            NEATCONTEXT_HOST_KEY: "",
+            COPILOT_LOADER_PID: "48596"
+          }
+        }
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      child.on("exit", () => resolve(stderr.trim()));
+    });
+    assert.doesNotMatch(withPid, /publishes no session identity/);
   });
 });
 
@@ -427,9 +448,29 @@ describe("upgrading from a release that scoped to the workspace", () => {
     assert.match(status, /No context is connected/);
     assert.doesNotMatch(status, /An earlier version of this plugin/);
   });
+
+  it("ignores a workspace selection without a context name", async () => {
+    const sessions = path.join(home, "plugin-sessions");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      path.join(sessions, `${workspaceSessionId(workspace)}.json`),
+      JSON.stringify({ contextName: "   " })
+    );
+
+    const status = await cli(["status"], { sessionId: "copilot-session-new" });
+    assert.match(status, /No context is connected/);
+    assert.doesNotMatch(status, /An earlier version of this plugin/);
+  });
 });
 
 describe("telling the user when the bridge has not caught up", () => {
+  it("warns from status when a live bridge is serving another session", async () => {
+    await writeBridgeRecord("some-other-session");
+    const output = await cli(["status"], { sessionId: "copilot-session-a" });
+    assert.match(output, /serving an earlier session, not this one/);
+    assert.match(output, /get_context.*other one/);
+  });
+
   it("warns after use when a live bridge is serving another session", async () => {
     await writeBridgeRecord("some-other-session");
     const output = await cli(["use", "payment team"], { sessionId: "copilot-session-a" });

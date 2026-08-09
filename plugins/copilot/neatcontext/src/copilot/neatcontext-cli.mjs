@@ -109,10 +109,7 @@ function hostIdentityWarning() {
 // reads once the host publishes a real session id. Saying so beats letting a
 // working connection look like it disappeared — and it is only said when this
 // workspace actually has one and nothing is connected now.
-async function workspaceSelectionHint(connected) {
-  if (connected) {
-    return null;
-  }
+async function workspaceSelectionHint() {
   const workspace = workspaceSessionId();
   if (sessionId() === workspace) {
     return null;
@@ -164,9 +161,6 @@ async function retireWorkspaceSelection() {
 // itself would be worse than the wait.
 async function bridgeDriftWarning() {
   const id = sessionId();
-  if (!id) {
-    return null;
-  }
   const { state } = await awaitBridgeSession(id);
   if (state !== "drifted") {
     return null;
@@ -347,7 +341,7 @@ async function commandStatus(state) {
         "`/neatcontext:create`."
       : "No context is connected yet. Use `/neatcontext:use` to pick one."
   );
-  const upgrade = await workspaceSelectionHint(connected);
+  const upgrade = await workspaceSelectionHint();
   if (upgrade) {
     print("");
     print(upgrade);
