@@ -95,6 +95,25 @@ function hostPid() {
   }
 }
 
+// A host key names one directory entry, so it is held to the same rule as
+// anything else that becomes a path segment. Exported because an adapter that
+// wants to know whether a shared key is available has to ask the same question
+// this does — a value accepted there and rejected here would claim a channel
+// that was never opened.
+export function normalizeHostKey(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 &&
+    trimmed !== "." &&
+    trimmed !== ".." &&
+    !trimmed.includes("/") &&
+    !trimmed.includes("\\")
+    ? trimmed
+    : null;
+}
+
 // The host process this process belongs to.
 //
 // NEATCONTEXT_HOST_KEY is the explicit form, for tests and for any host that can
@@ -104,11 +123,7 @@ function hostPid() {
 export function hostKey() {
   const explicit = process.env.NEATCONTEXT_HOST_KEY;
   if (typeof explicit === "string") {
-    const trimmed = explicit.trim();
-    return trimmed.length > 0 && trimmed !== "." && trimmed !== ".." && !trimmed.includes("/") &&
-      !trimmed.includes("\\")
-      ? trimmed
-      : null;
+    return normalizeHostKey(explicit);
   }
   return pidKey(hostPid()) ?? pidKey(process.ppid);
 }

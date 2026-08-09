@@ -319,6 +319,29 @@ describe("a host that publishes no identity at all", () => {
     assert.match(stderr, /NEATCONTEXT_SESSION_ID/);
   });
 
+  it("is not silenced by a host key that cannot name a file", async () => {
+    // `hostKey()` rejects these, so no pointer is written and the two halves are
+    // back to their own working directories. Accepting them here would claim a
+    // channel that was never opened.
+    for (const key of ["..", ".", "a/b", "a\\b", "   "]) {
+      const { stderr } = await new Promise((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [path.join(copilot, "neatcontext-cli.mjs"), "status"],
+          {
+            cwd: workspace,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...childEnv({}), NEATCONTEXT_HOST_KEY: key }
+          }
+        );
+        let out = "";
+        child.stderr.on("data", (chunk) => (out += chunk));
+        child.on("exit", () => resolve({ stderr: out }));
+      });
+      assert.match(stderr, /publishes no session identity/, `accepted ${JSON.stringify(key)}`);
+    }
+  });
+
   it("still scopes to the workspace, so one window keeps working", async () => {
     await bare(["use", "payment team"]);
     assert.match((await bare(["status"])).stdout, /Connected context: payment team/i);
@@ -377,6 +400,25 @@ describe("upgrading from a release that scoped to the workspace", () => {
     await cli(["use", "payment team"], { cwd: workspace });
     await cli(["use", "Dokploy"], { sessionId: "copilot-session-new" });
     const status = await cli(["status"], { sessionId: "copilot-session-new" });
+    assert.doesNotMatch(status, /An earlier version of this plugin/);
+  });
+
+  it("stops offering it once the user has acted on it, even after disconnecting", async () => {
+    await cli(["use", "payment team"], { cwd: workspace });
+    // Acting on the hint is what retires it — this session has one of its own now.
+    await cli(["use", "Dokploy"], { sessionId: "copilot-session-new" });
+    await cli(["disconnect"], { sessionId: "copilot-session-new" });
+    const status = await cli(["status"], { sessionId: "copilot-session-new" });
+    assert.match(status, /No context is connected/);
+    assert.doesNotMatch(status, /An earlier version of this plugin/);
+  });
+
+  it("says nothing when the workspace selection is the live one", async () => {
+    // No session id published, so this session *is* the workspace: the file is
+    // its own selection, not a leftover, and must be neither offered nor removed.
+    await cli(["use", "payment team"], { cwd: workspace });
+    const status = await cli(["status"], { cwd: workspace });
+    assert.match(status, /Connected context: payment team/i);
     assert.doesNotMatch(status, /An earlier version of this plugin/);
   });
 

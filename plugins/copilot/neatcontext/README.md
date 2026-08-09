@@ -49,9 +49,9 @@ copilot plugin install neatcontext@neatcontext
   NeatContext Desktop connection right now.
 - **Selections are per session.** A connected context belongs to the Copilot
   session that connected it, as on every other host. Where a Copilot build
-  publishes no session identity, the plugin falls back to the workspace folder,
-  every session opened there shares one selection, and `/neatcontext:status`
-  says so rather than leaving you to guess.
+  publishes no session identity, the plugin falls back to the workspace folder
+  and every session opened there shares one selection. It says so when that
+  happens, rather than leaving you to guess.
 - **Upgrading from 0.3.3 or earlier.** Those releases scoped every Copilot
   selection to the workspace folder. The first time you run a command after
   upgrading, this session has no connection of its own yet, so

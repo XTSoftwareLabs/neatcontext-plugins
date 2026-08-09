@@ -133,6 +133,22 @@ async function workspaceSelectionHint(connected) {
   }
 }
 
+// The hint above is a one-time thing, so the record behind it is retired the
+// moment it has served its purpose: the first connection made in a session of
+// its own is the user acting on it, whether or not they picked the same context.
+// Left in place it would come back after every deliberate `/neatcontext:disconnect`,
+// telling the user to reconnect the thing they just disconnected, forever.
+//
+// Never when this session *is* the workspace fallback — that file is the live
+// selection then, not a leftover.
+async function retireWorkspaceSelection() {
+  const workspace = workspaceSessionId();
+  if (sessionId() === workspace) {
+    return;
+  }
+  await rm(sessionSelectionFilePath(workspace), { force: true }).catch(() => undefined);
+}
+
 // Whether the bridge that will serve this session has caught up with it.
 //
 // The success message below is written from the record this process just wrote,
@@ -501,6 +517,7 @@ async function commandUse(state, query) {
 
   const target = resolution.context;
   const result = await applySelection(target);
+  await retireWorkspaceSelection();
   print(
     `Connected the "${result.name}" context. Your next messages in this session ` +
       "will be grounded in its domain profile and knowledge folder."
@@ -707,6 +724,7 @@ function printUpdatePreview(preview) {
 async function printSaveConnection(record) {
   const outcome = await connectAfterSave(record).catch(() => null);
   if (outcome?.connected) {
+    await retireWorkspaceSelection();
     print(`Connected context: ${record.name}`);
     print(
       "This session had no context connected, so it is now grounded in the one it " +

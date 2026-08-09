@@ -40,6 +40,7 @@ import path from "node:path";
 import { configureSessionId } from "../core/session.mjs";
 import {
   configureHostPid,
+  normalizeHostKey,
   normalizeHostSessionId,
   publishBridgeSession,
   resolveHostSessionId
@@ -97,11 +98,13 @@ export function unusableSessionOverride() {
 // between them. It is not a guess: each branch is a thing the host either
 // publishes to both processes or does not.
 export function sessionIdentityIsShared() {
-  const key = process.env.NEATCONTEXT_HOST_KEY;
   return Boolean(
     explicitId(process.env.NEATCONTEXT_SESSION_ID) ??
       explicitId(process.env.COPILOT_AGENT_SESSION_ID) ??
-      (typeof key === "string" && key.trim().length > 0 ? key : null) ??
+      // The same rule `hostKey()` applies, asked through the same function: a
+      // key accepted here and rejected there would claim a channel that was
+      // never opened, which is the one thing this must not do.
+      normalizeHostKey(process.env.NEATCONTEXT_HOST_KEY) ??
       // A host pid both halves can see is enough on its own: it names the
       // pointer file they share, which is what carries the session across.
       (/^[1-9][0-9]{0,9}$/.test(String(process.env.COPILOT_LOADER_PID ?? "").trim())
