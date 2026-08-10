@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "neatcontext",
   "displayName": "NeatContext",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Save Claude Code work as reusable, domain-aware context",
   "author": {
     "name": "XTSoftwareLabs",
