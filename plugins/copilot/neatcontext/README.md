@@ -51,7 +51,14 @@ copilot plugin install neatcontext@neatcontext
   use Copilot's shared session identity, so they agree even when they start in
   different working directories.
 - **Workspace fallback.** On a host that does not expose a session identity,
-  sessions opened in the same workspace share one selection.
+  sessions share one selection only when the host starts both plugin processes
+  in the same working directory.
+- **Upgrading.** Existing workspace-scoped selections are preserved. If the
+  current session has no selection, `/neatcontext:status` names an available
+  workspace selection so it can be reconnected once.
+- **Session replacement.** Session identity is captured when a plugin process
+  starts. If a host reuses an MCP process for another session, restart that host
+  before reconnecting a context.
 - **Saving is explicit.** Run `/neatcontext:save` when the visible conversation
   contains durable work worth preserving.
 

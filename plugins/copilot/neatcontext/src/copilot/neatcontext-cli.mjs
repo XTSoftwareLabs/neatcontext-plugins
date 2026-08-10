@@ -20,8 +20,12 @@
 // Exit code is always 0: the output is meant to be read, not branched on.
 
 import { readFile, rm } from "node:fs/promises";
-import "./session.mjs";
-import { clearSelection, readSelection } from "../core/local-state.mjs";
+import { workspaceSessionId } from "./session.mjs";
+import {
+  clearSelection,
+  readSelection,
+  sessionSelectionFilePath
+} from "../core/local-state.mjs";
 import {
   createCapturedContext,
   createContext,
@@ -138,6 +142,26 @@ async function loadState() {
   return { contexts, selection, connected };
 }
 
+async function workspaceSelectionHint(state) {
+  const workspace = workspaceSessionId();
+  if (sessionId() === workspace) {
+    return null;
+  }
+  try {
+    const saved = JSON.parse(await readFile(sessionSelectionFilePath(workspace), "utf8"));
+    const context = state.contexts.find((candidate) => candidate.id === saved?.contextId);
+    if (!context) {
+      return null;
+    }
+    return (
+      `An earlier version connected "${context.name}" to this workspace. ` +
+      `Reconnect it for this session with \`/neatcontext:use ${context.name}\`.`
+    );
+  } catch {
+    return null;
+  }
+}
+
 async function commandStatus(state) {
   const { connected, selection } = state;
   const routing = await readRouting();
@@ -214,6 +238,11 @@ async function commandStatus(state) {
         "`/neatcontext:create`."
       : "No context is connected yet. Use `/neatcontext:use` to pick one."
   );
+  const upgrade = await workspaceSelectionHint(state);
+  if (upgrade) {
+    print("");
+    print(upgrade);
+  }
   reportMode();
 }
 

@@ -581,6 +581,12 @@ test("Copilot sessions scope to the workspace when no session id is provided", a
   const sameWorkspace = await runNode(cli, ["status"], { env: wsEnv, cwd: workspaceA });
   assert.match(sameWorkspace.stdout, /Connected context: workspace scoped/);
 
+  const unsafeHostId = await runNode(cli, ["status"], {
+    env: { ...wsEnv, COPILOT_AGENT_SESSION_ID: "../not-a-session" },
+    cwd: workspaceA
+  });
+  assert.match(unsafeHostId.stdout, /Connected context: workspace scoped/);
+
   const otherWorkspace = await runNode(cli, ["status"], { env: wsEnv, cwd: workspaceB });
   assert.match(otherWorkspace.stdout, /No context is connected yet/);
 
@@ -627,6 +633,42 @@ test("Copilot CLI and MCP bridge share the host session across working directori
     cwd: commandWorkspace
   });
   assert.match(otherSession.stdout, /No context is connected yet/);
+});
+
+test("Copilot status offers an existing workspace selection after upgrading", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-upgrade-");
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "copilot-upgrade-ws-"));
+  t.after(async () => {
+    await Promise.all(
+      [home.directory, workspace].map((directory) =>
+        rm(directory, { recursive: true, force: true })
+      )
+    );
+  });
+  const workspaceEnv = {
+    ...home.env,
+    NEATCONTEXT_SESSION_ID: "",
+    COPILOT_AGENT_SESSION_ID: ""
+  };
+  const sessionEnv = {
+    ...workspaceEnv,
+    COPILOT_AGENT_SESSION_ID: "copilot-agent-session-new"
+  };
+
+  await createContext(home, "upgrade target");
+  await runNode(cli, ["use", "upgrade target"], { env: workspaceEnv, cwd: workspace });
+
+  const status = await runNode(cli, ["status"], { env: sessionEnv, cwd: workspace });
+  assert.match(status.stdout, /No context is connected yet/);
+  assert.match(status.stdout, /earlier version connected "upgrade target"/);
+  assert.match(status.stdout, /\/neatcontext:use upgrade target/);
+
+  await runNode(cli, ["delete", "upgrade target", "--yes"], {
+    env: sessionEnv,
+    cwd: workspace
+  });
+  const missing = await runNode(cli, ["status"], { env: sessionEnv, cwd: workspace });
+  assert.doesNotMatch(missing.stdout, /earlier version connected/);
 });
 
 test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {

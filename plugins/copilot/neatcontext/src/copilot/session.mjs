@@ -8,8 +8,11 @@
 // session id. In that case all Copilot sessions opened in one workspace share
 // the selection, as they did before.
 //
-// NEATCONTEXT_SESSION_ID overrides the digest — for tests, and for any host
-// that can inject a real per-session id into every plugin process.
+// The host identity is captured when each process starts. This adapter does not
+// try to detect a session replacement underneath a long-lived MCP server.
+//
+// NEATCONTEXT_SESSION_ID overrides both the host id and the digest — for tests,
+// and for any host that can inject a real per-session id into every process.
 //
 // CLAUDE_CODE_SESSION_ID is deliberately NOT consulted, even though a
 // Claude-compat host might set it: a variable only some of this plugin's
@@ -26,6 +29,13 @@ function explicitId(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+const SAFE_HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+function hostSessionId(value) {
+  const id = explicitId(value);
+  return id && SAFE_HOST_SESSION_ID.test(id) ? id : null;
+}
+
 export function workspaceSessionId(workspace = process.cwd()) {
   const resolved = path.resolve(workspace);
   // Windows paths compare case-insensitively; two spellings of one folder must
@@ -38,7 +48,7 @@ export function workspaceSessionId(workspace = process.cwd()) {
 export function copilotSessionId() {
   return (
     explicitId(process.env.NEATCONTEXT_SESSION_ID) ??
-    explicitId(process.env.COPILOT_AGENT_SESSION_ID) ??
+    hostSessionId(process.env.COPILOT_AGENT_SESSION_ID) ??
     workspaceSessionId()
   );
 }
