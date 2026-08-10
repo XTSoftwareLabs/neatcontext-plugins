@@ -176,16 +176,9 @@ describe("get_context with nothing connected", () => {
       await session.send("initialize", { protocolVersion: "2025-11-25" });
       const text = await ask(session, "why is checkout-api throwing 5xx?");
 
-      assert.match(text, /Connect the one this request belongs to with `use_context`/);
-      assert.match(text, /do not ask the user to run a command/);
-      // The regression itself: the old text opened by telling the model to send
-      // the user to /neatcontext:use, and that is what it acted on.
-      assert.doesNotMatch(
-        text.split("## Contexts")[0],
-        /\/neatcontext:use/,
-        "the lead paragraph must not answer 'what now?' with a slash command"
-      );
-      assert.match(text, /Incident/);
+      assert.match(text, /Automatically connected "Incident"/);
+      assert.match(text, /connected context: Incident/i);
+      assert.doesNotMatch(text, /No NeatContext Context is connected/);
     } finally {
       await session.close();
     }
@@ -199,16 +192,9 @@ describe("get_context with nothing connected", () => {
     const session = bridge("upgraded-machine");
     try {
       await session.send("initialize", { protocolVersion: "2025-11-25" });
-      assert.match(await ask(session, "checkout-api 5xx"), /Routing is on \(auto\)/);
-
-      // And the switch it was told to make actually goes through, unprompted,
-      // which is what the baked-in ask was refusing.
-      const used = await session.send("tools/call", {
-        name: "use_context",
-        arguments: { context: "Incident", reason: "checkout 5xx" }
-      });
-      assert.equal(used.result.isError, false);
-      assert.match(used.result.content[0].text, /Switched this session to "Incident"/);
+      const text = await ask(session, "checkout-api 5xx");
+      assert.match(text, /Automatically connected "Incident"/);
+      assert.match(text, /connected context: Incident/i);
     } finally {
       await session.close();
     }

@@ -34,6 +34,7 @@ import {
   switchPolicy
 } from "../core/routing.mjs";
 import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
+import { tokenize } from "../core/routing-search.mjs";
 import { applySelection, resolveContext } from "../core/selection.mjs";
 
 const SERVER_INFO = { name: "neatcontext", version: "0.3.4" };
@@ -361,6 +362,83 @@ async function routingMenu(query) {
     : renderMenu(entries, options);
 }
 
+function normalizeRoutingText(value) {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, " ") : "";
+}
+
+function isConfidentMatch(entry, query) {
+  const normalizedQuery = normalizeRoutingText(query);
+  const queryTokens = tokenize(query);
+  const exact =
+    normalizeRoutingText(entry.name) === normalizedQuery ||
+    entry.aliases.some((alias) => {
+      const aliasTokens = tokenize(alias);
+      return (
+        aliasTokens.length > 0 &&
+        queryTokens.some((_, start) =>
+          aliasTokens.every((token, offset) => queryTokens[start + offset] === token)
+        )
+      );
+    });
+  return exact || entry.matched.length >= 2;
+}
+
+// `get_context` is already the session asking the plugin to route this request.
+// In auto mode, complete a clear first connection here rather than depending on
+// the model to translate the returned shortlist into a second `use_context`
+// call. Existing connections are never changed by this shortcut: leaving a
+// context still needs the conversational follow-up judgment only the model has.
+async function autoConnectClearMatch(query) {
+  if (typeof query !== "string" || query.trim().length === 0) {
+    return null;
+  }
+  const selection = await readSelection().catch(() => null);
+  if (selection?.available === false || selection?.contextId) {
+    return null;
+  }
+
+  const [{ contexts }, state] = await Promise.all([listAllContexts(), readRouting()]);
+  if (resolveMode(state, sessionId()) !== "auto") {
+    return null;
+  }
+
+  const ranked = await rankContexts(contexts, state, query, { connectedId: null });
+  const decision = assess(ranked);
+  const leader = decision.verdict === "clear" ? ranked[0] : null;
+  const target = leader && contexts.find((context) => context.id === leader.id);
+  if (!target) {
+    return null;
+  }
+
+  const entry = {
+    ...menuEntries([target], state)[0],
+    matched: leader.matched
+  };
+  if (!isConfidentMatch(entry, query)) {
+    return null;
+  }
+
+  const policy = switchPolicy(state, {
+    id: sessionId(),
+    targetId: target.id,
+    connectedId: null
+  });
+  if (!policy.allowed) {
+    return null;
+  }
+
+  await applySelection(target);
+  await noteDecision({
+    sessionId: sessionId(),
+    from: null,
+    to: target.name,
+    mode: policy.mode,
+    reason: `clear query match: ${leader.matched.join(", ")}`,
+    requested: false
+  });
+  return target.name;
+}
+
 // A shortlist needs three things: a request to match against, enough contexts
 // that narrowing gains anything, and at least one that actually matched. Any of
 // them missing and the full menu goes out instead — a session is never left
@@ -529,6 +607,10 @@ async function handleMessage(message) {
     return;
   }
 
+  const autoConnected =
+    message.method === "tools/call" && message.params?.name === GET_CONTEXT_TOOL.name
+      ? await autoConnectClearMatch(message.params?.arguments?.query)
+      : null;
   const context = await activeContext();
   if (dependsOnExtensions(message)) {
     await refreshExtensions(context);
@@ -553,7 +635,7 @@ async function handleMessage(message) {
   }
 
   if (!isNotification && response) {
-    writeLine(await shapeResponse(message, response));
+    writeLine(await shapeResponse(message, response, autoConnected));
   }
 }
 
@@ -595,7 +677,27 @@ async function withNotes(response, place, query) {
   };
 }
 
-async function shapeResponse(message, response) {
+function prependAutoConnection(response, contextName) {
+  if (!contextName || !Array.isArray(response.result?.content) || response.result.content[0]?.type !== "text") {
+    return response;
+  }
+  const content = response.result.content;
+  return {
+    ...response,
+    result: {
+      ...response.result,
+      content: [
+        {
+          ...content[0],
+          text: `Automatically connected "${contextName}" for this request.\n\n${content[0].text}`
+        },
+        ...content.slice(1)
+      ]
+    }
+  };
+}
+
+async function shapeResponse(message, response, autoConnected = null) {
   if (message.method === "initialize" && response.result) {
     return withNotes(response, "instructions");
   }
@@ -605,7 +707,10 @@ async function shapeResponse(message, response) {
   if (message.method === "tools/call" && message.params?.name === GET_CONTEXT_TOOL.name) {
     // The handshake has no request to match against, so only this path can
     // narrow the menu — which is also the path that is re-read every turn.
-    return withNotes(response, "content", message.params?.arguments?.query);
+    return prependAutoConnection(
+      await withNotes(response, "content", message.params?.arguments?.query),
+      autoConnected
+    );
   }
   return response;
 }

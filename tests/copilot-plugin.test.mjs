@@ -862,6 +862,7 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   for (const [name, useWhen] of corpus) {
     await createContext(home, name, { sessionId: "copilot-shortlist", useWhen });
   }
+  await runNode(cli, ["mode", "ask"], { env });
 
   const session = rpcSession(env);
   sessions.push(session);
@@ -890,4 +891,181 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   );
   assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
   assert.match(unmatched.result.content[0].text, /Docker container/);
+});
+
+test("Copilot get_context auto-connects a uniquely clear first context in auto mode", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "LM coordination", {
+    sessionId,
+    useWhen: "LM-PF coordination implemented in Windows ServiceManager"
+  });
+  await createContext(home, "Queue lag", {
+    sessionId,
+    useWhen: "order-events partition lag and consumer rebalancing"
+  });
+  const alias = await runNode(
+    cli,
+    ["alias", "LM coordination", "--called", "LM coordination implemented in Windows ServiceManager"],
+    { env }
+  );
+  assert.equal(alias.code, 0);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", {
+      query: "How is LM coordination implemented in Windows ServiceManager?"
+    })
+  );
+  assert.match(response.result.content[0].text, /Automatically connected "LM coordination"/);
+  assert.match(response.result.content[0].text, /connected context: LM coordination/i);
+  assert.doesNotMatch(response.result.content[0].text, /No NeatContext Context is connected/);
+});
+
+test("Copilot get_context does not auto-connect a near-tie", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-tie-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-tie";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Codex packaging", {
+    sessionId,
+    useWhen: "plugin packaging, manifests and marketplace steps"
+  });
+  await createContext(home, "Kimi packaging", {
+    sessionId,
+    useWhen: "plugin packaging, manifests and marketplace steps"
+  });
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "plugin packaging manifests marketplace steps" })
+  );
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.match(response.result.content[0].text, /Codex packaging/);
+  assert.match(response.result.content[0].text, /Kimi packaging/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+test("Copilot get_context does not auto-connect a weak one-term match", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-weak-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-weak";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Collections", {
+    sessionId,
+    useWhen: "guide"
+  });
+  const alias = await runNode(cli, ["alias", "Collections", "--called", "id"], { env });
+  assert.equal(alias.code, 0);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(toolCall(2, "get_context", { query: "guide" }));
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.match(response.result.content[0].text, /Collections/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+test("Copilot get_context does not auto-connect a context declined this session", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-declined-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-declined";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const declined = await session.call(
+    toolCall(2, "use_context", { context: "Checkout incident", declined: true })
+  );
+  assert.equal(declined.result.isError, false);
+
+  const response = await session.call(
+    toolCall(3, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+test("Copilot get_context preserves ask mode for a clear match", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-ask-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-ask";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  const mode = await runNode(cli, ["mode", "ask"], { env });
+  assert.equal(mode.code, 0);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.match(response.result.content[0].text, /Routing is on \(ask\)/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+test("Copilot get_context never auto-switches an existing connection", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-switch-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-switch";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Current work", {
+    sessionId,
+    useWhen: "the current connected work"
+  });
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  const use = await runNode(cli, ["use", "Current work"], { env });
+  assert.match(use.stdout, /Connected the "Current work" context/);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /connected context: Current work/i);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
 });
