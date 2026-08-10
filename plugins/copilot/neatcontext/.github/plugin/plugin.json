@@ -1,7 +1,7 @@
 {
   "name": "neatcontext",
   "displayName": "NeatContext",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Save GitHub Copilot work as reusable, domain-aware context",
   "author": {
     "name": "XTSoftwareLabs",
