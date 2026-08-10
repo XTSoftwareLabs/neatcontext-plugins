@@ -663,6 +663,11 @@ test("Copilot status offers an existing workspace selection after upgrading", as
   assert.match(status.stdout, /earlier version connected "upgrade target"/);
   assert.match(status.stdout, /\/neatcontext:use upgrade target/);
 
+  await runNode(cli, ["use", "upgrade target"], { env: sessionEnv, cwd: workspace });
+  const connected = await runNode(cli, ["status"], { env: sessionEnv, cwd: workspace });
+  assert.match(connected.stdout, /Connected context: upgrade target/);
+  assert.doesNotMatch(connected.stdout, /earlier version connected/);
+
   await runNode(cli, ["delete", "upgrade target", "--yes"], {
     env: sessionEnv,
     cwd: workspace

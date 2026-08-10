@@ -55,7 +55,7 @@ copilot plugin install neatcontext@neatcontext
   in the same working directory.
 - **Upgrading.** Existing workspace-scoped selections are preserved. If the
   current session has no selection, `/neatcontext:status` names an available
-  workspace selection so it can be reconnected once.
+  workspace selection so it can be reconnected for that session.
 - **Session replacement.** Session identity is captured when a plugin process
   starts. If a host reuses an MCP process for another session, restart that host
   before reconnecting a context.
