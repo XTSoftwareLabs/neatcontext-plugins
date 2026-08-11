@@ -714,8 +714,14 @@ test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
   assert.match(empty.result.content[0].text, /No NeatContext Context is connected/);
   // A context exists and routing is on, so the answer leads with the route this
   // session can take itself rather than with a command for the user to type.
-  assert.match(empty.result.content[0].text, /No safe automatic match was made for this call/);
   assert.match(empty.result.content[0].text, /connect a clear choice with `use_context`/);
+  // Nothing was passed to match against, so nothing was matched. The text must
+  // not report a decision that was never made.
+  assert.doesNotMatch(
+    empty.result.content[0].text,
+    /No safe automatic match was made for this call/,
+    "with no query, no matching ran — saying otherwise is evidence the model acts on"
+  );
 
   // Ask mode refuses an unrequested switch. It is set explicitly rather than
   // assumed, so this keeps testing ask mode whatever the default becomes.
@@ -871,7 +877,6 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   for (const [name, useWhen] of corpus) {
     await createContext(home, name, { sessionId: "copilot-shortlist", useWhen });
   }
-  await runNode(cli, ["mode", "ask"], { env });
 
   const session = rpcSession(env);
   sessions.push(session);
@@ -881,9 +886,12 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   const getContext = tools.result.tools.find((tool) => tool.name === "get_context");
   assert.equal(getContext.inputSchema.properties.query.type, "string");
 
-  const matched = await session.call(
-    toolCall(3, "get_context", { query: "why is checkout throwing 5xx" })
-  );
+  // Auto mode, which is the default and the only one most users ever see. The
+  // request is one word, so it narrows the menu without earning a connection:
+  // `checkout-api` becomes three tokens but it is still one thing the user
+  // typed, and one is below the floor for acting unasked.
+  const matched = await session.call(toolCall(3, "get_context", { query: "checkout-api" }));
+  assert.doesNotMatch(matched.result.content[0].text, /Automatically connected/);
   assert.match(matched.result.content[0].text, /## Contexts that match what the user just asked/);
   assert.match(matched.result.content[0].text, /INC-1001 checkout/);
   assert.ok(!matched.result.content[0].text.includes("Docker container"));
@@ -900,6 +908,50 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   );
   assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
   assert.match(unmatched.result.content[0].text, /Docker container/);
+});
+
+// The interaction auto-connect actually introduced, which nothing else covers:
+// a store large enough for a shortlist, connected mid-call, so the menu below
+// the answer is built with a `connectedId` that did not exist when the call
+// arrived — and STICKY_BOOST now applies to the context this same call chose.
+test("Copilot shows the shortlist against the context it just auto-connected", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-shortlist-auto-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-shortlist-auto";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+
+  const corpus = [
+    ["INC-1001 checkout", "checkout-api 5xx from pgbouncer pool exhaustion"],
+    ["Queue lag", "order-events partition lag and consumer rebalancing"],
+    ["Codex design", "Codex CLI plugin design and marketplace packaging"],
+    ["Kimi plugin", "Kimi Code manifests, skills and commands"],
+    ["Evidence", "conversation evidence and transcript adapters"],
+    ["Refunds", "refunds and chargebacks"],
+    ["Docker container", "Ubuntu container with SSH"],
+    ["Marketplace config", "switching the marketplace source"],
+    ["Session drift", "bridge session and thread drift"]
+  ];
+  for (const [name, useWhen] of corpus) {
+    await createContext(home, name, { sessionId, useWhen });
+  }
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx from pgbouncer pool exhaustion" })
+  );
+  const text = response.result.content[0].text;
+  assert.match(text, /Automatically connected "INC-1001 checkout"/);
+  assert.match(text, /## Contexts that match what the user just asked/);
+  // Named as connected in the very menu the connecting call returned, so the
+  // model is not invited to route again to where it already is.
+  assert.match(text, /\*\*INC-1001 checkout\*\* \*\*\(connected\)\*\*/);
+  assert.match(text, /Routing is on \(auto\)/);
 });
 
 test("Copilot get_context auto-connects a uniquely clear first context in auto mode", async (t) => {
@@ -949,9 +1001,142 @@ test("Copilot get_context auto-connects a uniquely clear first context in auto m
       to: "LM coordination",
       mode: "auto",
       reason: "clear query match: lm, coordination, implemented, windows, servicemanager",
-      requested: false
+      requested: false,
+      automatic: true
     }
   ]);
+});
+
+// The gate is a floor on how much of the request agreed, and these are the four
+// ways a match can look like two terms without being two terms.
+test("Copilot get_context does not auto-connect on evidence weaker than it looks", async (t) => {
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+
+  const ask = async (label, build, query) => {
+    const home = await isolatedHome(`neatcontext-copilot-gate-${label}-`);
+    const sessionId = `copilot-gate-${label}`;
+    const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+    await build(home, sessionId, env);
+    const session = rpcSession(env);
+    sessions.push(session);
+    await session.call(initialize(1));
+    const response = await session.call(toolCall(2, "get_context", { query }));
+    return response.result.content[0].text;
+  };
+
+  // One hyphenated word tokenizes into three, but the user typed one thing.
+  const hyphenated = await ask(
+    "hyphenated",
+    (home, sessionId) =>
+      createContext(home, "Checkout incident", {
+        sessionId,
+        useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+      }),
+    "checkout-api"
+  );
+  assert.doesNotMatch(hyphenated, /Automatically connected/);
+  assert.match(hyphenated, /Checkout incident/);
+
+  // A CJK run contributes its characters and their pairs — seven tokens for two
+  // characters, and still one thing asked about.
+  const cjk = await ask(
+    "cjk",
+    (home, sessionId) =>
+      createContext(home, "订单系统", { sessionId, useWhen: "订单延迟与消费者重平衡" }),
+    "订单延迟"
+  );
+  assert.doesNotMatch(cjk, /Automatically connected/);
+
+  // Two filenames from a knowledge folder are not two statements about what a
+  // context is for. `FIELD_WEIGHTS` already says so; the floor has to as well.
+  const filenames = await ask(
+    "filenames",
+    async (home, sessionId) => {
+      await knowledgeFolder(home, { "deploy.md": "# deploy\n", "runbook.md": "# runbook\n" });
+      await createContext(home, "Payments", { sessionId, useWhen: "settlement reconciliation" });
+    },
+    "where is the deploy runbook?"
+  );
+  assert.doesNotMatch(filenames, /Automatically connected/);
+
+  // A one-word alias inside an ordinary sentence is weaker evidence than the
+  // floor it would be skipping.
+  const alias = await ask(
+    "alias",
+    async (home, sessionId, env) => {
+      await createContext(home, "Windows notes", { sessionId, useWhen: "Windows build notes" });
+      const added = await runNode(cli, ["alias", "Windows notes", "--called", "windows"], { env });
+      assert.equal(added.code, 0);
+    },
+    "how do I install Docker on Windows?"
+  );
+  assert.doesNotMatch(alias, /Automatically connected/);
+  assert.match(alias, /Windows notes/);
+});
+
+// Auto-connect is the one route nobody announces before it happens, so it needs
+// a session it cannot leak out of. Without an id from the host, one selection
+// file is shared by every window open on the same folder.
+test("Copilot get_context does not auto-connect without a host session id", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-shared-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  await createContext(home, "Checkout incident", {
+    sessionId: "seed",
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: "", COPILOT_AGENT_SESSION_ID: "" };
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+});
+
+// A home it cannot write to must cost the caller an optimization, never the
+// answer. Unguarded, the write rejected, the rejection was swallowed, and the
+// request was never answered at all — as was every later one in the session.
+test("Copilot get_context still answers when the auto-connection cannot be saved", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-readonly-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-readonly";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  // The shape a read-only or permission-denied home takes from here: the
+  // directory the selection is written into cannot be created.
+  await writeFile(path.join(home.directory, "plugin-sessions"), "not a directory\n");
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const first = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.equal(first.result.isError, false);
+  assert.match(first.result.content[0].text, /No NeatContext Context is connected/);
+  assert.doesNotMatch(first.result.content[0].text, /Automatically connected/);
+
+  // And the session is still usable afterwards, rather than hanging on every
+  // subsequent call.
+  const second = await session.call(toolCall(3, "get_context", { query: "checkout-api 5xx" }));
+  assert.equal(second.result.isError, false);
 });
 
 test("Copilot get_context does not auto-connect a near-tie", async (t) => {

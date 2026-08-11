@@ -383,11 +383,18 @@ export function declineFactor(state, contextId, now = new Date()) {
 // Names are unique in a store, so this is exact; renaming a context forgets its
 // history, which for a hint of this size is a fair trade against threading an
 // id through five hosts' bridges.
+//
+// Routes the plugin made for itself are skipped. They are in the log because
+// the log is the record of what happened, but they are not evidence about this
+// user: reading them back would raise the multiplier of a context this machine
+// chose on a keyword hit, making the same choice likelier next time and the one
+// after — a mis-route that argues for itself. Only what a person or a model
+// decided counts as familiarity.
 export function familiarity(state, context, { connectedId = null, now = new Date() } = {}) {
   const sticky = context.id === connectedId ? STICKY_BOOST : 1;
   let weight = 0;
   for (const decision of state.decisions ?? []) {
-    if (decision?.to !== context.name) continue;
+    if (decision?.to !== context.name || decision?.automatic === true) continue;
     const days = (now.getTime() - Date.parse(decision.at)) / DAY_MS;
     if (!Number.isFinite(days) || days < 0) continue;
     weight += 0.5 ** (days / FRECENCY_HALF_LIFE_DAYS);
@@ -414,6 +421,13 @@ function pruneDeclines(declines, now) {
 // Every switch, with what it was routing away from and why. Thresholds and card
 // quality are guesses until this has something in it: manual selections are the
 // ground truth that says whether the derived lines actually route correctly.
+//
+// Which is why a route the plugin made for itself has to be marked `automatic`
+// as it goes in. Left indistinguishable, machine routes accumulate at roughly
+// one per new session and the log stops being able to answer the question it is
+// kept for. `requested` does not carry that distinction — a model calling
+// `use_context` in auto mode records `requested: false` too, and it was still a
+// decision somebody made.
 export function noteDecision(entry) {
   return update((state) => {
     state.decisions.push({ at: new Date().toISOString(), ...entry });
@@ -451,7 +465,12 @@ function describe(entry) {
 // an instruction from a context you are *not* connected to is still an
 // instruction sitting in the window, and it would bleed into how the session
 // answers on the context you are.
-export function renderMenu(entries, { connectedId, mode } = {}) {
+//
+// It takes a `decision` for the same reason the shortlist does. A near-tie is
+// something the plugin knows and the model cannot see, and a store too small
+// for a shortlist is exactly where the full menu goes out instead — so leaving
+// the note behind there means the one caller that most needs it never gets it.
+export function renderMenu(entries, { connectedId, mode, decision } = {}) {
   if (mode === "manual" || entries.length === 0) {
     return null;
   }
@@ -461,6 +480,10 @@ export function renderMenu(entries, { connectedId, mode } = {}) {
     lines.push(`- **${entry.name}**${marker} — ${describe(entry)}`);
   }
   lines.push("");
+  const tie = tieNote(decision);
+  if (tie) {
+    lines.push(tie);
+  }
   lines.push(...routingInstructions(mode, Boolean(connectedId)));
   return lines.join("\n");
 }

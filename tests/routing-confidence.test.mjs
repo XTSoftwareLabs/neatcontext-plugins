@@ -42,7 +42,7 @@ beforeEach(async () => {
 
 const routing = await import("../plugins/claude-code/neatcontext/src/core/routing.mjs");
 const store = await import("../plugins/claude-code/neatcontext/src/core/context-store.mjs");
-const { CLOSE_RATIO, assess } = await import(
+const { CLOSE_RATIO, assess, isConfidentMatch, normalizeRoutingText } = await import(
   "../plugins/claude-code/neatcontext/src/core/routing-candidates.mjs"
 );
 
@@ -141,6 +141,170 @@ describe("assess", () => {
   });
 });
 
+describe("isConfidentMatch", () => {
+  // `assess` answers whether one candidate is ahead of the rest. This answers
+  // the other half — whether being ahead was earned — and a store of one
+  // context is where the two come apart: the leader there is uncontested by
+  // definition, so `clear` says nothing at all about the match.
+  const hit = (term, ...fields) => [term, fields.length > 0 ? fields : ["description"]];
+  const candidate = (name, ...hits) => ({
+    id: name,
+    name,
+    score: 10,
+    matched: hits.map(([term]) => term),
+    matchedFields: Object.fromEntries(hits.map(([term, fields]) => [term, fields]))
+  });
+
+  it("wants two parts of the request to agree, not two tokens", () => {
+    assert.equal(
+      isConfidentMatch(candidate("Checkout", hit("checkout"), hit("5xx")), "checkout 5xx"),
+      true
+    );
+  });
+
+  it("counts one hyphenated word as the one word the user typed", () => {
+    // tokenize expands `checkout-api` to run + parts on purpose, for recall.
+    // Three tokens off one word is not three parts of a request agreeing.
+    const leader = candidate(
+      "Checkout",
+      hit("checkout-api"),
+      hit("checkout"),
+      hit("api")
+    );
+    assert.equal(leader.matched.length, 3);
+    assert.equal(isConfidentMatch(leader, "checkout-api"), false);
+    assert.equal(isConfidentMatch(leader, "checkout-api 5xx"), false, "5xx did not match");
+  });
+
+  it("counts a CJK run the same way, rather than as one token per character", () => {
+    // 订单延迟 emits its four characters and three bigrams: seven tokens, one
+    // request. Left uncounted, every two-character CJK question auto-connects.
+    const leader = candidate(
+      "订单系统",
+      hit("订"),
+      hit("单"),
+      hit("延"),
+      hit("迟"),
+      hit("订单"),
+      hit("单延"),
+      hit("延迟")
+    );
+    assert.equal(isConfidentMatch(leader, "订单延迟"), false);
+    assert.equal(isConfidentMatch(leader, "订单延迟 排查"), false, "排查 did not match");
+  });
+
+  it("does not let two filenames stand in for what a context is for", () => {
+    const leader = candidate("Payments", hit("deploy", "files"), hit("runbook", "files"));
+    assert.equal(isConfidentMatch(leader, "where is the deploy runbook?"), false);
+  });
+
+  it("counts a filename hit that also landed somewhere that means something", () => {
+    const leader = candidate(
+      "Payments",
+      hit("deploy", "files", "description"),
+      hit("runbook", "files")
+    );
+    assert.equal(isConfidentMatch(leader, "deploy runbook rollback"), false);
+    assert.equal(
+      isConfidentMatch(candidate("Payments", hit("deploy", "files", "description"), hit("rollback")), "deploy rollback"),
+      true
+    );
+  });
+
+  it("takes a candidate whose fields were never recorded at face value", () => {
+    // Older callers hand back `matched` alone. Silently scoring those at zero
+    // would turn a missing field map into a routing outage.
+    assert.equal(
+      isConfidentMatch({ name: "Checkout", matched: ["checkout", "5xx"] }, "checkout 5xx"),
+      true
+    );
+  });
+
+  it("connects on the context's own name", () => {
+    assert.equal(isConfidentMatch(candidate("Checkout incident"), "  Checkout   Incident "), true);
+  });
+
+  it("connects on an alias the user wrote, when it is specific enough to be one", () => {
+    const leader = candidate("Windows notes", hit("windows"));
+    assert.equal(
+      isConfidentMatch(leader, "how does LM coordination work in Windows ServiceManager?", {
+        aliases: ["LM coordination"]
+      }),
+      true
+    );
+  });
+
+  it("refuses a one-word alias found inside an ordinary sentence", () => {
+    // `api`, `pr`, `lm` are exactly the aliases people write, and derived cards
+    // generate them too. Matching one inside a sentence is weaker evidence than
+    // the floor it would be skipping.
+    const leader = candidate("Windows notes", hit("windows"));
+    assert.equal(
+      isConfidentMatch(leader, "how do I install Docker on Windows?", { aliases: ["windows"] }),
+      false
+    );
+    // It is still the user's word for this context when it is the whole ask.
+    assert.equal(isConfidentMatch(leader, "Windows", { aliases: ["windows"] }), true);
+  });
+
+  it("refuses a punctuated one-word alias found inside an ordinary sentence", () => {
+    // `tokenize` splits `checkout-api` into three, so counting tokens would
+    // read this as a multi-word alias and let it match from inside a sentence —
+    // reopening the bypass for every ticket id, service name and API version
+    // anyone registers. One word means one word the user typed.
+    const leader = candidate("Checkout API", hit("checkout-api"));
+    for (const alias of ["checkout-api", "user_id", "api-v2", "INC-1001"]) {
+      assert.equal(
+        isConfidentMatch(leader, `why is ${alias} throwing 5xx on staging?`, { aliases: [alias] }),
+        false,
+        alias
+      );
+      assert.equal(isConfidentMatch(leader, alias, { aliases: [alias] }), true, alias);
+    }
+  });
+
+  it("refuses a multi-word alias that tokenizes down to one word", () => {
+    // `the api` is two words, but `tokenize` drops the stopword and leaves one,
+    // and a one-token contiguous check is just "does this word appear anywhere".
+    // `the API`, `our PR`, `how LM works` are how people write these down.
+    const leader = candidate("Payments API", hit("api"));
+    for (const [alias, query] of [
+      ["the api", "why is the api throwing 5xx today?"],
+      ["our api", "why is the api throwing 5xx today?"],
+      ["how api", "why is the api throwing 5xx today?"],
+      ["our pr", "why was our pr merged so fast today?"]
+    ]) {
+      assert.equal(isConfidentMatch(leader, query, { aliases: [alias] }), false, alias);
+    }
+    // Two words that both survive still route from inside a sentence.
+    assert.equal(
+      isConfidentMatch(leader, "why is the payments api throwing 5xx today?", {
+        aliases: ["payments api"]
+      }),
+      true
+    );
+  });
+
+  it("ignores an alias with nothing matchable in it", () => {
+    const leader = candidate("Notes", hit("notes"));
+    assert.equal(isConfidentMatch(leader, "a note about x", { aliases: ["!!", "-"] }), false);
+  });
+
+  it("refuses when there is no request to match against", () => {
+    const leader = candidate("Checkout", hit("checkout"), hit("5xx"));
+    assert.equal(isConfidentMatch(leader, "   "), false);
+    assert.equal(isConfidentMatch(leader, undefined), false);
+  });
+
+  it("refuses a candidate that matched nothing", () => {
+    assert.equal(isConfidentMatch({ name: "Checkout" }, "checkout 5xx"), false);
+  });
+
+  it("normalizes the way the rest of routing does", () => {
+    assert.equal(normalizeRoutingText("  Checkout   API  "), "checkout api");
+  });
+});
+
 describe("the default mode", () => {
   it("is auto, because asking is now the route's decision and not the dial's", async () => {
     // Auto only became safe once a near-tie asks on its own. Before that, "ask
@@ -190,6 +354,30 @@ describe("renderShortlist with a decision", () => {
   it("renders without a decision at all", () => {
     // The renderer keeps working for callers that have no scores to hand.
     assert.match(routing.renderShortlist(entries, { mode: "ask" }), /Contexts that match/);
+  });
+});
+
+describe("renderMenu with a decision", () => {
+  // The full menu is what goes out below SHORTLIST_MIN_CONTEXTS, which is where
+  // most machines live. A tie the plugin refused to act on has to reach the
+  // model here too — otherwise the plugin declines, explains nothing, and the
+  // model picks one of the two anyway.
+  const entries = [
+    { id: "a", name: "Codex plugin", useWhen: "packaging", aliases: [] },
+    { id: "b", name: "Kimi plugin", useWhen: "packaging", aliases: [] }
+  ];
+  const scored = entries.map((entry, index) => ({ ...entry, score: index === 0 ? 10 : 9.8 }));
+
+  it("carries the near-tie into the full menu", () => {
+    const text = routing.renderMenu(entries, { mode: "auto", decision: assess(scored) });
+    assert.match(text, /\*\*Codex plugin\*\* and \*\*Kimi plugin\*\* match the request about equally well/);
+    assert.match(text, /in auto mode too/);
+  });
+
+  it("says nothing about ties when there is a clear leader, or no decision", () => {
+    const clear = assess([{ ...entries[0], score: 10 }, { ...entries[1], score: 2 }]);
+    assert.ok(!routing.renderMenu(entries, { mode: "auto", decision: clear }).includes("equally well"));
+    assert.ok(!routing.renderMenu(entries, { mode: "auto" }).includes("equally well"));
   });
 });
 

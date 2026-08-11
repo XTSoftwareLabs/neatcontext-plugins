@@ -19,7 +19,7 @@
 // checking costs no extra reads. Only a real change pays for a rebuild.
 
 import { declineFactor, familiarity } from "./routing.mjs";
-import { buildIndex, rank } from "./routing-search.mjs";
+import { buildIndex, rank, tokenize } from "./routing-search.mjs";
 
 // The fields, in the shape the scorer weighs. Aliases are joined into one
 // string rather than kept as a list because the scorer counts words, and a
@@ -97,6 +97,118 @@ export function assess(ranked) {
   return { verdict: leaders.length > 1 ? "close" : "clear", leaders };
 }
 
+// --- acting on a match without being asked -----------------------------------
+//
+// `assess` answers "is one candidate ahead of the others", which is a question
+// about the shape of the ranking. It is not the same question as "is this good
+// enough to re-ground a session on", and a store of one context makes the
+// difference plain: the leader is always uncontested there, so `clear` comes
+// back on any query that matched a single word.
+//
+// So the floor below is absolute rather than relative. It asks how much of the
+// request actually agreed with this context, and it lives here — beside
+// `assess`, in host-neutral core — because nothing about it is specific to one
+// host. Every bridge reads and writes the same `~/.neatcontext`; a rule about
+// when routing may act unasked cannot be one host's private opinion.
+
+// How many independent parts of the request have to agree.
+const MIN_AGREEING_TERMS = 2;
+
+// Where a hit has to land to count toward that floor. `FIELD_WEIGHTS` already
+// rates `files` lowest because a knowledge folder's listing is incidental to
+// what a context is *for*; a floor that counted filenames equally would throw
+// that distinction away at the one moment it matters most, and "where is the
+// deploy runbook?" would connect on two filenames and nothing else.
+const INCIDENTAL_FIELDS = new Set(["files"]);
+
+export function normalizeRoutingText(text) {
+  return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// The request split the way the user wrote it, deduplicated: one entry per
+// whitespace-separated run.
+//
+// This is the unit the floor counts, and it has to be, because a token is not
+// one. `tokenize` deliberately expands a single `checkout-api` into
+// `[checkout-api, checkout, api]` and a two-character CJK request into seven
+// tokens — good for recall, but counting those as agreement means one word, or
+// any CJK request at all, clears a floor meant to require two.
+function queryTerms(query) {
+  return new Set(normalizeRoutingText(query).split(" ").filter(Boolean));
+}
+
+function agreeingTerms(candidate, query) {
+  const carried = new Set(
+    (candidate.matched ?? []).filter((term) => {
+      const fields = candidate.matchedFields?.[term];
+      return !fields || fields.some((field) => !INCIDENTAL_FIELDS.has(field));
+    })
+  );
+  if (carried.size === 0) {
+    return 0;
+  }
+  let agreeing = 0;
+  for (const term of queryTerms(query)) {
+    if (tokenize(term).some((token) => carried.has(token))) {
+      agreeing += 1;
+    }
+  }
+  return agreeing;
+}
+
+// An alias is the one routing signal the user authored by hand, at the moment
+// they were correcting a wrong route, so it may stand in for the term floor.
+// Only when it is specific enough to be evidence, though: a one-word alias
+// found inside a longer sentence is weaker than the rule it would be skipping,
+// and `api`, `pr` or `lm` are exactly the aliases people write. A one-word
+// alias therefore has to be the whole request; a longer one has to appear
+// contiguously in the request's tokens.
+//
+// One word means one word the user typed, counted the way `queryTerms` counts
+// the request — not the tokens the index derived from it. `tokenize` expands
+// `checkout-api` into three and `user_id` into three, and reading that as a
+// multi-word alias would reopen the bypass for every ticket id, service name
+// and API version anyone is likely to register.
+//
+// It has to survive tokenizing as two, as well. `the api` is two words the user
+// typed, but `tokenize` drops the stopword and leaves one, and a one-token
+// contiguous check is just "does this word appear anywhere" — the very test the
+// first floor exists to prevent. `the API`, `our PR`, `how LM works` are how
+// people write these aliases down, so both floors have to hold.
+function wordCount(text) {
+  return normalizeRoutingText(text).split(" ").filter(Boolean).length;
+}
+
+function matchesAlias(aliases, query) {
+  const normalized = normalizeRoutingText(query);
+  const queryTokens = tokenize(query);
+  return aliases.some((alias) => {
+    const aliasTokens = tokenize(alias);
+    if (aliasTokens.length === 0) {
+      return false;
+    }
+    if (wordCount(alias) < 2 || aliasTokens.length < 2) {
+      return normalizeRoutingText(alias) === normalized;
+    }
+    return queryTokens.some((_, start) =>
+      aliasTokens.every((token, offset) => queryTokens[start + offset] === token)
+    );
+  });
+}
+
+// Whether a leading candidate is strong enough to connect to without asking.
+// `assess` has to have said `clear` first — this only decides whether the
+// leader earned it.
+export function isConfidentMatch(candidate, query, { aliases = [] } = {}) {
+  if (typeof query !== "string" || query.trim().length === 0) {
+    return false;
+  }
+  if (normalizeRoutingText(candidate?.name ?? "") === normalizeRoutingText(query)) {
+    return true;
+  }
+  return matchesAlias(aliases, query) || agreeingTerms(candidate, query) >= MIN_AGREEING_TERMS;
+}
+
 export function createRoutingIndex({ listFiles }) {
   let key = null;
   let index = null;
@@ -109,14 +221,20 @@ export function createRoutingIndex({ listFiles }) {
     }
     const byId = new Map(contexts.map((context) => [context.id, context]));
     const now = new Date();
-    const { connectedId = null } = options;
+    const { connectedId = null, limit = 5 } = options;
     // Past refusals are applied after ranking rather than folded into the
     // index: they change on their own schedule, and rebuilding the index every
     // time someone says no would throw away the cache for a multiplier.
     //
     // Re-sorted afterwards because a discount can change the order, and the
     // shortlist's whole meaning is that it is in order.
-    return rank(index, query, options)
+    //
+    // And cut to `limit` only after that, never before. `rank` slices on raw
+    // BM25, so a candidate that wins once its decline and familiarity
+    // multipliers are applied could be dropped before anything here ever saw
+    // it — silently, and most damagingly for `assess`, which would then report
+    // an uncontested leader because its rival had been cut.
+    return rank(index, query, { ...options, limit: Number.POSITIVE_INFINITY })
       .map((result) => {
         const context = byId.get(result.id);
         return {
@@ -126,9 +244,11 @@ export function createRoutingIndex({ listFiles }) {
             result.score *
             declineFactor(state, result.id, now) *
             familiarity(state, context, { connectedId, now }),
-          matched: result.matched
+          matched: result.matched,
+          matchedFields: result.matchedFields
         };
       })
-      .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
+      .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+      .slice(0, limit);
   };
 }

@@ -10,7 +10,7 @@
 //     get_context instead of silently vanishing.
 
 import readline from "node:readline";
-import "./session.mjs";
+import { hasHostSessionId } from "./session.mjs";
 import { readSelection } from "../core/local-state.mjs";
 import {
   CONTEXT_MISSING_MESSAGE,
@@ -33,8 +33,11 @@ import {
   sessionId,
   switchPolicy
 } from "../core/routing.mjs";
-import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
-import { tokenize } from "../core/routing-search.mjs";
+import {
+  assess,
+  createRoutingIndex,
+  isConfidentMatch
+} from "../core/routing-candidates.mjs";
 import { applySelection, resolveContext } from "../core/selection.mjs";
 
 const SERVER_INFO = { name: "neatcontext", version: "0.3.4" };
@@ -92,13 +95,26 @@ const NOTHING_CONNECTED =
 // context came back as an offer to go and connect one by hand. The menu is
 // still what carries the mode-specific rules; these two only have to stop
 // contradicting it.
-const NOTHING_CONNECTED_ROUTABLE =
-  `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
-  "one is for. No safe automatic match was made for this call. Follow the routing " +
-  "rules below: connect a clear choice with `use_context`, ask when the choice is ambiguous, " +
-  "or say none covers the request. Do not ask the user to run a command to connect a context " +
-  "you can already name. If none covers the request, offer `/neatcontext:save` to make one out " +
-  "of this conversation. Until then, do not answer from general knowledge.";
+//
+// Whether automatic matching actually ran is threaded in rather than assumed.
+// This text is reached with no query at all, on a stale selection, and when
+// reading the store failed — and on each of those "no safe automatic match was
+// made" would be the plugin telling the model that nothing in the store matched
+// when nothing was ever compared. That is the same rule the comment above sets
+// out for the handshake instructions: text that cannot know the current state
+// must not assert it.
+function nothingConnectedRoutable(assessed) {
+  return (
+    `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
+    "one is for. " +
+    (assessed ? "No safe automatic match was made for this call. " : "") +
+    "Follow the routing rules below: connect a clear choice with `use_context`, ask when the " +
+    "choice is ambiguous, or say none covers the request. Do not ask the user to run a command " +
+    "to connect a context you can already name. If none covers the request, offer " +
+    "`/neatcontext:save` to make one out of this conversation. Until then, do not answer from " +
+    "general knowledge."
+  );
+}
 
 const NOTHING_CONNECTED_ASK =
   `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
@@ -220,36 +236,47 @@ function jsonRpcResult(id, result) {
 
 // --- Context source: answers locally, from disk ------------------------------
 
-async function listAllContexts() {
-  return { contexts: await listContexts() };
-}
-
 // Resolved per call, never fixed at startup: the user can create or save the
 // first context mid-session, and the next get_context has to stop telling them
 // they have none. The mode is read here for the same reason — it decides
 // whether a menu is about to follow this text, and therefore whether pointing
 // at a slash command is the honest answer or the one that breaks routing.
-async function nothingConnectedText() {
-  const { contexts } = await listAllContexts().catch(() => ({ contexts: [] }));
+//
+// The routing pass this call already made is passed in rather than re-read,
+// and it is also what says whether automatic matching ran at all.
+async function nothingConnectedText(pass) {
+  const contexts = pass?.contexts ?? (await listContexts().catch(() => []));
   if (contexts.length === 0) {
     return NOTHING_EXISTS;
   }
-  const mode = resolveMode(await readRouting().catch(() => ({ sessions: {} })), sessionId());
+  const state = pass?.state ?? (await readRouting().catch(() => ({ sessions: {} })));
+  const mode = resolveMode(state, sessionId());
   if (mode === "manual") {
     return NOTHING_CONNECTED;
   }
-  return mode === "ask" ? NOTHING_CONNECTED_ASK : NOTHING_CONNECTED_ROUTABLE;
+  return mode === "ask" ? NOTHING_CONNECTED_ASK : nothingConnectedRoutable(pass?.assessed === true);
 }
 
 // The selected context, or null when nothing is selected. A selection
 // whose context was deleted out-of-band resolves to `missing` so get_context
 // can say what happened.
-async function activeContext() {
-  const selection = await readSelection().catch(() => null);
+//
+// A context this call just connected is passed straight through: it was read
+// out of the same listing a moment ago, and re-reading the selection file only
+// to look it up again would be two disk hits to learn what is already in hand.
+// The same listing answers the ordinary case, so a call that made one pass over
+// the store makes exactly one.
+async function activeContext(pass) {
+  if (pass?.connected) {
+    return { record: pass.connected };
+  }
+  const selection = pass ? pass.selection : await readSelection().catch(() => null);
   if (!selection || selection.available === false) {
     return null;
   }
-  const record = await readContext(selection.contextId).catch(() => null);
+  const record = pass
+    ? (pass.contexts.find((context) => context.id === selection.contextId) ?? null)
+    : await readContext(selection.contextId).catch(() => null);
   return record ? { record } : { missing: true, name: selection.contextName };
 }
 
@@ -278,7 +305,7 @@ function dependsOnExtensions(message) {
   );
 }
 
-async function contextResponse(message, context) {
+async function contextResponse(message, context, pass = null) {
   const { id, method, params } = message;
   if (id === undefined || id === null) {
     return null; // notification: nothing to answer
@@ -303,7 +330,7 @@ async function contextResponse(message, context) {
   if (method === "tools/call" && params?.name === GET_CONTEXT_TOOL.name) {
     if (!context) {
       return jsonRpcResult(id, {
-        content: [{ type: "text", text: await nothingConnectedText() }],
+        content: [{ type: "text", text: await nothingConnectedText(pass) }],
         isError: false
       });
     }
@@ -353,39 +380,25 @@ const rankContexts = createRoutingIndex({
     (await listKnowledgeFiles(record.knowledgeFolder, { limit: 60 })).files
 });
 
-async function routingMenu(query) {
-  const [{ contexts }, state] = await Promise.all([listAllContexts(), readRouting()]);
-  const selection = await readSelection().catch(() => null);
-  const options = {
-    connectedId: selection?.contextId ?? null,
-    mode: resolveMode(state, sessionId())
-  };
+async function routingMenu(query, pass) {
+  const [contexts, state] = pass
+    ? [pass.contexts, pass.state]
+    : await Promise.all([listContexts(), readRouting()]);
+  const connectedId = pass
+    ? (pass.connected?.id ?? pass.selection?.contextId ?? null)
+    : ((await readSelection().catch(() => null))?.contextId ?? null);
+  const options = { connectedId, mode: resolveMode(state, sessionId()) };
   const entries = menuEntries(contexts, state);
-  const shortlist = await shortlistFor(contexts, state, entries, query, options.connectedId);
-  return shortlist
-    ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
-    : renderMenu(entries, options);
-}
-
-function normalizeRoutingText(value) {
-  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, " ") : "";
-}
-
-function isConfidentMatch(entry, query) {
-  const normalizedQuery = normalizeRoutingText(query);
-  const queryTokens = tokenize(query);
-  const exact =
-    normalizeRoutingText(entry.name) === normalizedQuery ||
-    entry.aliases.some((alias) => {
-      const aliasTokens = tokenize(alias);
-      return (
-        aliasTokens.length > 0 &&
-        queryTokens.some((_, start) =>
-          aliasTokens.every((token, offset) => queryTokens[start + offset] === token)
-        )
-      );
-    });
-  return exact || entry.matched.length >= 2;
+  const shortlist = await shortlistFor(contexts, state, entries, query, connectedId);
+  if (shortlist) {
+    return renderShortlist(shortlist, { ...options, decision: assess(shortlist) });
+  }
+  // The full menu carries the tie the pass found, if it found one. A store
+  // below SHORTLIST_MIN_CONTEXTS never builds a shortlist, so this is the only
+  // way a near-tie the plugin already refused to act on reaches the model at
+  // all — and without it the plugin declines, says nothing about why, and the
+  // model picks one of the two anyway.
+  return renderMenu(entries, { ...options, decision: pass?.decision });
 }
 
 // `get_context` is already the session asking the plugin to route this request.
@@ -393,55 +406,99 @@ function isConfidentMatch(entry, query) {
 // the model to translate the returned shortlist into a second `use_context`
 // call. Existing connections are never changed by this shortcut: leaving a
 // context still needs the conversational follow-up judgment only the model has.
-async function autoConnectClearMatch(query) {
-  if (typeof query !== "string" || query.trim().length === 0) {
-    return null;
-  }
+//
+// One pass over the store serves the whole call. What it loads — contexts,
+// routing state, the ranking and its verdict — is what the menu and the
+// nothing-connected text are built from a moment later, and re-reading it there
+// made every `get_context` with a query hit the disk three times over for the
+// same answer.
+//
+// The confidence rule itself lives in core beside `assess`, not here. Copilot
+// is the first host to act on it and for now the only one; the other four share
+// this machine's `~/.neatcontext` and keep the old behavior until they are
+// wired up too, which is a staged rollout rather than a permanent split.
+async function routingPass(query) {
+  const asked = typeof query === "string" && query.trim().length > 0;
+  const id = sessionId();
   const selection = await readSelection().catch(() => null);
-  if (selection?.available === false || selection?.contextId) {
-    return null;
+  const [contexts, state] = await Promise.all([
+    listContexts().catch(() => []),
+    readRouting().catch(() => ({ sessions: {}, cards: {} }))
+  ]);
+  const pass = { contexts, state, selection, connected: null, decision: null, assessed: false };
+
+  // Everything that stops the pass before it ranks anything, in one place, so
+  // `assessed` stays a statement about what actually happened.
+  //
+  // A selection carrying a `contextId` covers both "already connected" and
+  // "pointed at a context that is gone, and `readSelection` just cleared the
+  // file". The second is deliberate: a user whose context vanished should be
+  // told that, not silently re-grounded in a different one on the next answer.
+  if (
+    !asked ||
+    selection?.contextId ||
+    contexts.length === 0 ||
+    resolveMode(state, id) !== "auto" ||
+    // Without a session id published by the host, one selection file is shared
+    // by every window open on this workspace. A model or a user calling
+    // `use_context` at least announces the switch; a keyword hit in one window
+    // would silently re-ground the conversation in the next.
+    !hasHostSessionId()
+  ) {
+    return pass;
   }
 
-  const [{ contexts }, state] = await Promise.all([listAllContexts(), readRouting()]);
-  if (resolveMode(state, sessionId()) !== "auto") {
-    return null;
-  }
+  // Every candidate, not a top slice: the tie check is only as good as the
+  // field it can see.
+  //
+  // Everything from here is inside one guard. An auto-connection that cannot be
+  // made is a missed optimization, and that is all it may ever cost — unguarded,
+  // a home this process cannot write to turned every `get_context` in the
+  // session into a request that is never answered at all: the write rejected,
+  // `main` swallowed it, and nothing was written to stdout.
+  try {
+    const ranked = await rankContexts(contexts, state, query, {
+      limit: contexts.length,
+      connectedId: null
+    });
+    pass.decision = assess(ranked);
+    pass.assessed = true;
+    if (pass.decision.verdict !== "clear") {
+      return pass;
+    }
 
-  const ranked = await rankContexts(contexts, state, query, { connectedId: null });
-  const decision = assess(ranked);
-  const leader = decision.verdict === "clear" ? ranked[0] : null;
-  const target = leader && contexts.find((context) => context.id === leader.id);
-  if (!target) {
-    return null;
-  }
+    const leader = ranked[0];
+    const target = contexts.find((context) => context.id === leader.id);
+    if (!target || !isConfidentMatch(leader, query, { aliases: aliasesOf(state, target.id) })) {
+      return pass;
+    }
 
-  const entry = {
-    ...menuEntries([target], state)[0],
-    matched: leader.matched
-  };
-  if (!isConfidentMatch(entry, query)) {
-    return null;
-  }
+    // Mode was checked above to avoid ranking for nothing; this is the
+    // authority on whether the switch itself is allowed, declines included.
+    const policy = switchPolicy(state, { id, targetId: target.id, connectedId: null });
+    if (!policy.allowed) {
+      return pass;
+    }
 
-  const policy = switchPolicy(state, {
-    id: sessionId(),
-    targetId: target.id,
-    connectedId: null
-  });
-  if (!policy.allowed) {
-    return null;
+    await applySelection(target);
+    await noteDecision({
+      sessionId: id,
+      from: null,
+      to: target.name,
+      mode: policy.mode,
+      reason: `clear query match: ${leader.matched.join(", ")}`,
+      requested: false,
+      automatic: true
+    });
+    pass.connected = target;
+  } catch {
+    return pass;
   }
+  return pass;
+}
 
-  await applySelection(target);
-  await noteDecision({
-    sessionId: sessionId(),
-    from: null,
-    to: target.name,
-    mode: policy.mode,
-    reason: `clear query match: ${leader.matched.join(", ")}`,
-    requested: false
-  });
-  return target.name;
+function aliasesOf(state, contextId) {
+  return state.cards?.[contextId]?.aliases ?? [];
 }
 
 // A shortlist needs three things: a request to match against, enough contexts
@@ -499,7 +556,7 @@ async function previewContext(id, target) {
 async function routingToolCall(message) {
   const { id, params } = message;
   const query = typeof params?.arguments?.context === "string" ? params.arguments.context : "";
-  const { contexts } = await listAllContexts();
+  const contexts = await listContexts();
   const resolution = resolveContext(contexts, query);
   if (resolution.error) {
     return toolText(
@@ -612,13 +669,19 @@ async function handleMessage(message) {
     return;
   }
 
-  const autoConnected =
-    message.method === "tools/call" && message.params?.name === GET_CONTEXT_TOOL.name
-      ? await autoConnectClearMatch(message.params?.arguments?.query)
-      : null;
-  const context = await activeContext();
-  if (dependsOnExtensions(message)) {
+  const isGetContext =
+    message.method === "tools/call" && message.params?.name === GET_CONTEXT_TOOL.name;
+  const pass = isGetContext ? await routingPass(message.params?.arguments?.query) : null;
+  const context = await activeContext(pass);
+  // Extensions are deliberately not resolved on the turn that auto-connected.
+  // Resolving one starts the user's own server, and this is the one connection
+  // nobody asked for out loud: the announcement goes out first, and anything
+  // bound to the context starts on the next call that actually needs it.
+  if (dependsOnExtensions(message) && !pass?.connected) {
     await refreshExtensions(context);
+  } else if (pass?.connected) {
+    extensionTools = [];
+    extensionStatuses = [];
   }
 
   // An extension tool, proxied to the server the user bound for it. Answered
@@ -631,7 +694,7 @@ async function handleMessage(message) {
     }
   }
 
-  const response = await contextResponse(message, context);
+  const response = await contextResponse(message, context, pass);
 
   if (message.method === "initialize" && response && response.result) {
     started = true;
@@ -640,7 +703,7 @@ async function handleMessage(message) {
   }
 
   if (!isNotification && response) {
-    writeLine(await shapeResponse(message, response, autoConnected));
+    writeLine(await shapeResponse(message, response, pass));
   }
 }
 
@@ -652,13 +715,13 @@ async function handleMessage(message) {
 //
 // The connection rule goes last, so it is the closest thing to the answer the
 // session is about to write — and it is the one part that is never omitted.
-async function pluginNotes(query) {
-  const menu = await routingMenu(query);
+async function pluginNotes(query, pass) {
+  const menu = await routingMenu(query, pass);
   return menu ? `${menu}\n\n${CONNECTION_RULE}` : CONNECTION_RULE;
 }
 
-async function withNotes(response, place, query) {
-  const notes = await pluginNotes(query);
+async function withNotes(response, place, query, pass) {
+  const notes = await pluginNotes(query, pass);
   if (place === "instructions") {
     const existing = response.result.instructions;
     return {
@@ -702,7 +765,7 @@ function prependAutoConnection(response, contextName) {
   };
 }
 
-async function shapeResponse(message, response, autoConnected = null) {
+async function shapeResponse(message, response, pass = null) {
   if (message.method === "initialize" && response.result) {
     return withNotes(response, "instructions");
   }
@@ -713,8 +776,8 @@ async function shapeResponse(message, response, autoConnected = null) {
     // The handshake has no request to match against, so only this path can
     // narrow the menu — which is also the path that is re-read every turn.
     return prependAutoConnection(
-      await withNotes(response, "content", message.params?.arguments?.query),
-      autoConnected
+      await withNotes(response, "content", message.params?.arguments?.query, pass),
+      pass?.connected?.name ?? null
     );
   }
   return response;
