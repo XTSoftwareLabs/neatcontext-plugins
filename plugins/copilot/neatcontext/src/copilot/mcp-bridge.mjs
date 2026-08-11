@@ -45,7 +45,10 @@ const GET_CONTEXT_TOOL = {
     "Get the connected NeatContext Context: domain profile files to read, and local " +
     "knowledge folders to search. Call this before answering anything that depends on the " +
     "user's own domain, documents, tools, or team conventions — some hosts do not surface " +
-    "this server's initialize instructions, so the tool description is what carries that rule.",
+    "this server's initialize instructions, so the tool description is what carries that rule. " +
+    "Pass the user's request as query before calling use_context: when nothing is connected, " +
+    "this tool safely auto-connects a uniquely clear match in auto mode or returns the routing " +
+    "menu needed to choose, ask, or decline.",
   inputSchema: {
     type: "object",
     properties: {
@@ -91,11 +94,11 @@ const NOTHING_CONNECTED =
 // contradicting it.
 const NOTHING_CONNECTED_ROUTABLE =
   `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
-  "one is for. Connect the one this request belongs to with `use_context`, then call " +
-  "`get_context` again and answer from what it returns — do not ask the user to run a command " +
-  "to connect a context you can already name. If none of them covers the request, say so and " +
-  "offer `/neatcontext:save` to make one out of this conversation. Until then, do not answer " +
-  "from general knowledge.";
+  "one is for. No safe automatic match was made for this call. Follow the routing " +
+  "rules below: connect a clear choice with `use_context`, ask when the choice is ambiguous, " +
+  "or say none covers the request. Do not ask the user to run a command to connect a context " +
+  "you can already name. If none covers the request, offer `/neatcontext:save` to make one out " +
+  "of this conversation. Until then, do not answer from general knowledge.";
 
 const NOTHING_CONNECTED_ASK =
   `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
@@ -116,7 +119,7 @@ const CONNECTION_RULE = `## Connecting a context, in GitHub Copilot
 
 Contexts are connected from this session and nowhere else: the \`use_context\` tool, or \`/neatcontext:use <name>\` run by the user. \`/neatcontext:disconnect\` disconnects the current one from this session. New ones are made from here too: \`/neatcontext:save\` turns the work in this conversation into one, and \`/neatcontext:create\` builds one around a folder of documents the user already has.
 
-There is no Desktop connection right now. Contexts are stored by this plugin. When the connected context is the wrong one, or none is connected, name the one you need and connect it here with \`use_context\` — or offer to, when the routing rules above say to ask first.`;
+There is no Desktop connection right now. Contexts are stored by this plugin. When a request may need a context, call \`get_context\` with the user's request before \`use_context\`. With nothing connected, it safely auto-connects a uniquely clear match in auto mode; otherwise it returns the current routing menu. Use \`use_context\` only to act on that menu, switch a wrong connection, or honor an explicit user choice — and ask first when the routing rules say to ask.`;
 
 // The two tools that let a session change what it is grounded in. They are the
 // plugin's whole routing mechanism: there is no model in any process here, so
@@ -125,11 +128,12 @@ const USE_CONTEXT_TOOL = {
   name: "use_context",
   title: "Switch Context",
   description:
-    "Switch this session to a different NeatContext Context, then call get_context and " +
-    "answer from what it returns. Name the context exactly as the routing menu lists it. " +
-    "In ask mode this only succeeds once the user has agreed — set `requested` then. Set " +
-    "`declined` instead of switching when the user turns a suggested switch down, so it is " +
-    "not suggested again.",
+    "Act on a routing menu returned by get_context, switch a wrong connection, or honor an " +
+    "explicit user choice; do not call this before get_context when routing a new request. " +
+    "After switching, call get_context and answer from what it returns. Name the context " +
+    "exactly as the routing menu lists it. In ask mode this only succeeds once the user has " +
+    "agreed — set `requested` then. Set `declined` instead of switching when the user turns a " +
+    "suggested switch down, so it is not suggested again.",
   inputSchema: {
     type: "object",
     properties: {
@@ -203,7 +207,8 @@ These instructions are fixed at the handshake and cannot be updated, so they are
 When the user asks anything that depends on their own domain, documents, tools, or team conventions, call the get_context tool and let its answer decide:
 
 - If it returns a Context, ground your answer in it and cite what you used.
-- If it reports that nothing is connected, it also lists the contexts that exist and says what to do about them — which may be to connect one yourself with the use_context tool, to ask the user first, or to tell them to run a command. Do what that answer says. It knows the current state and this text does not, so never substitute a slash command of your own for the route it offers.`;
+- Pass the user's request as query. If nothing is connected, get_context safely auto-connects a uniquely clear match in auto mode or returns the current routing menu.
+- If it still reports that nothing is connected, follow that returned menu: use use_context only for its clear choice, ask the user when required, or say no context covers the request. It knows the current state and this text does not, so never substitute a slash command of your own for the route it offers.`;
 
 function writeLine(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);

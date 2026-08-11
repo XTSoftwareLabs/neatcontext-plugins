@@ -692,6 +692,14 @@ test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
   const initialized = await session.call(initialize(1));
   assert.equal(initialized.result.serverInfo.name, "neatcontext");
   assert.match(initialized.result.instructions, /get_context/);
+  assert.match(
+    initialized.result.instructions,
+    /call `get_context` with the user's request before `use_context`/
+  );
+  assert.doesNotMatch(
+    initialized.result.instructions,
+    /none is connected, name the one you need and connect it here with `use_context`/
+  );
   assert.match(initialized.result.instructions, /Connecting a context, in GitHub Copilot/);
   assert.match(initialized.result.instructions, /no Desktop connection right now/);
 
@@ -706,7 +714,8 @@ test("Copilot MCP bridge serves Contexts and routing locally", async (t) => {
   assert.match(empty.result.content[0].text, /No NeatContext Context is connected/);
   // A context exists and routing is on, so the answer leads with the route this
   // session can take itself rather than with a command for the user to type.
-  assert.match(empty.result.content[0].text, /Connect the one this request belongs to/);
+  assert.match(empty.result.content[0].text, /No safe automatic match was made for this call/);
+  assert.match(empty.result.content[0].text, /connect a clear choice with `use_context`/);
 
   // Ask mode refuses an unrequested switch. It is set explicitly rather than
   // assumed, so this keeps testing ask mode whatever the default becomes.
@@ -928,6 +937,21 @@ test("Copilot get_context auto-connects a uniquely clear first context in auto m
   assert.match(response.result.content[0].text, /Automatically connected "LM coordination"/);
   assert.match(response.result.content[0].text, /connected context: LM coordination/i);
   assert.doesNotMatch(response.result.content[0].text, /No NeatContext Context is connected/);
+
+  const routing = JSON.parse(
+    await readFile(path.join(home.directory, "plugin-routing.json"), "utf8")
+  );
+  assert.deepEqual(routing.decisions, [
+    {
+      at: routing.decisions[0].at,
+      sessionId,
+      from: null,
+      to: "LM coordination",
+      mode: "auto",
+      reason: "clear query match: lm, coordination, implemented, windows, servicemanager",
+      requested: false
+    }
+  ]);
 });
 
 test("Copilot get_context does not auto-connect a near-tie", async (t) => {
@@ -983,6 +1007,40 @@ test("Copilot get_context does not auto-connect a weak one-term match", async (t
   assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
   assert.match(response.result.content[0].text, /Collections/);
   assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+test("Copilot get_context leaves an unrelated request unconnected", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-unrelated-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-unrelated";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "LM coordination", {
+    sessionId,
+    useWhen: "LM-PF coordination implemented in Windows ServiceManager"
+  });
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "What is the capital of France?" })
+  );
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.match(response.result.content[0].text, /LM coordination/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+
+  const routing = JSON.parse(
+    await readFile(path.join(home.directory, "plugin-routing.json"), "utf8")
+  );
+  assert.deepEqual(routing.sessions, {});
+  assert.deepEqual(routing.decisions, []);
+  await assert.rejects(stat(path.join(home.directory, "plugin-sessions")), {
+    code: "ENOENT"
+  });
 });
 
 test("Copilot get_context does not auto-connect a context declined this session", async (t) => {
