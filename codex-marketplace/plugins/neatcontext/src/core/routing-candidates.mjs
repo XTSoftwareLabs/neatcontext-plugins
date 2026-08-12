@@ -178,6 +178,40 @@ function agreeingTerms(candidate, query) {
   if (carried.size === 0) {
     return 0;
   }
+
+  // A compound and the parts `tokenize` derived from it are one thing this
+  // context knows about, and they have to arrive on this side as one.
+  //
+  // The pairing below is independent on both sides, but `matched` is not:
+  // `rank` returns every token the index holds, and a description containing
+  // `user_id` indexes `user_id`, `user` and `id`. All three come back, so a
+  // request that named the one concept twice found two distinct things waiting
+  // to be paired with — "what does user_id mean for a user?" cleared a floor of
+  // two on `user_id` and `user`, which is the very bypass this floor exists to
+  // close, arriving on the other side of it.
+  //
+  // The longest spelling is what is kept, and only its own derived parts are
+  // dropped: `user` and `users` derive from neither each other nor a common
+  // compound, so two things that really are two still count as two. Deletion is
+  // by derivation rather than by substring for the same reason — `id` inside
+  // `identity` is a different word, and dropping it would silently disarm the
+  // floor for any context whose description happens to contain a longer word.
+  //
+  // One direction is given up deliberately. A description that carries a
+  // derived part as a word of its own — "the `user_id` in the `user` table" —
+  // is indistinguishable here from one that only carries the compound, and both
+  // collapse to one. That costs an auto-connection on a description that really
+  // did name two things; the alternative costs a session re-grounded on a
+  // context it only half matched, unannounced. On the one surface that acts
+  // without asking, the miss is the cheaper mistake.
+  for (const term of [...carried]) {
+    for (const part of tokenize(term)) {
+      if (part !== term) {
+        carried.delete(part);
+      }
+    }
+  }
+
   const options = [];
   for (const term of queryTerms(query)) {
     const agreed = [...new Set(tokenize(term))].filter((token) => carried.has(token));

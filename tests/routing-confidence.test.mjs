@@ -97,6 +97,27 @@ function bridge(sessionId = "confidence-bridge") {
 
 const candidate = (id, score) => ({ id, name: id, score });
 
+const { buildIndex, rank } = await import(
+  "../plugins/claude-code/neatcontext/src/core/routing-search.mjs"
+);
+const { routingFields } = await import(
+  "../plugins/claude-code/neatcontext/src/core/routing-candidates.mjs"
+);
+
+// The floor as the bridge actually meets it: `matched` filled by `rank` from a
+// real index, rather than written by hand.
+//
+// Every hand-written fixture is a claim about what the index would return, and
+// a wrong one hides the bug it was meant to catch — a leader carrying `user`
+// but not `user_id` is a shape `rank` never produces, and the guard against
+// one concept spelled twice cannot fire against it.
+function confidentAgainst(description, query) {
+  const context = { id: "one", name: "Ctx", routingDescription: description };
+  const index = buildIndex([{ id: "one", fields: routingFields(context, null, []) }]);
+  const [leader] = rank(index, query, { limit: Number.POSITIVE_INFINITY });
+  return Boolean(leader) && isConfidentMatch({ ...leader, name: context.name }, query);
+}
+
 describe("assess", () => {
   it("calls a clear leader clear", () => {
     const decision = assess([candidate("winner", 10), candidate("other", 2)]);
@@ -229,18 +250,33 @@ describe("isConfidentMatch", () => {
 
   it("does not let one concept spelled two ways count as two", () => {
     // `user_id` tokenizes to [user_id, user, id] and `user?` to [user], so both
-    // words agree on the single carried token `user`. Two parts of the request,
-    // one thing agreed on — which is one piece of evidence, not two.
+    // words agree on one concept. Two parts of the request, one thing agreed
+    // on — which is one piece of evidence, not two.
+    //
+    // Fixtured as `rank` actually fills `matched`, which is the whole reason
+    // this bites: a description containing `user_id` indexes every one of
+    // [user_id, user, id], so all three come back and the pairing had three
+    // separate things to spend two words on. Handing the leader `user` alone
+    // was the one shape in which the guard could never fire.
     assert.equal(
-      isConfidentMatch(candidate("Users", hit("user")), "what does user_id mean for a user?"),
+      isConfidentMatch(
+        candidate("Users", hit("user_id"), hit("user"), hit("id")),
+        "what does user_id mean for a user?"
+      ),
       false
     );
     assert.equal(
-      isConfidentMatch(candidate("Docker", hit("docker")), "how do I run docker in docker-compose"),
+      isConfidentMatch(
+        candidate("Checkout API", hit("api"), hit("checkout-api"), hit("checkout")),
+        "is the api part of checkout-api?"
+      ),
       false
     );
     assert.equal(
-      isConfidentMatch(candidate("Checkout API", hit("api")), "is the api part of checkout-api?"),
+      isConfidentMatch(
+        candidate("Docker", hit("docker"), hit("docker-compose"), hit("compose")),
+        "docker in docker-compose"
+      ),
       false
     );
     // Two compounds sharing their only carried token is still one concept.
@@ -251,6 +287,71 @@ describe("isConfidentMatch", () => {
     // Two spellings that are genuinely two things still count as two.
     assert.equal(
       isConfidentMatch(candidate("Users", hit("user"), hit("users")), "user users"),
+      true
+    );
+  });
+
+  it("still counts a second word that agreed on something of its own", () => {
+    // now sits. "How we run services under `docker-compose`" indexes
+    // [run, docker, docker-compose, compose]; the request "how do I run docker
+    // in docker-compose" names the compound twice — collapsed to one — but also
+    // agrees on `run`, which the description carries independently of it. Two
+    // parts of the request, two things agreed on, and the floor is met.
+    //
+    // That is the rule working, not escaping: `run` is a word in the request
+    // that a word in the description matched. Reading it as a false positive
+    // would mean the floor had to know which agreements are interesting, which
+    // is a stopword list with no principled place to stop.
+    const leader = candidate(
+      "Docker",
+      hit("run"),
+      hit("docker"),
+      hit("docker-compose"),
+      hit("compose")
+    );
+    assert.equal(isConfidentMatch(leader, "how do I run docker in docker-compose"), true);
+    // Take that second agreement away and the compound is on its own again.
+    assert.equal(isConfidentMatch(leader, "docker in docker-compose"), false);
+  });
+
+  it("holds against `matched` as a real index fills it", () => {
+    // The same rule with no fixture in the way. Each row builds an index from a
+    // description, ranks the request against it, and hands `isConfidentMatch`
+    // whatever `rank` produced — which is the only version of this that proves
+    // anything about the bridge.
+    assert.equal(
+      confidentAgainst(
+        "How the `user_id` column is populated.",
+        "what does user_id mean for a user?"
+      ),
+      false
+    );
+    assert.equal(
+      confidentAgainst(
+        "Everything about the `checkout-api` service.",
+        "is the api part of checkout-api?"
+      ),
+      false
+    );
+    assert.equal(
+      confidentAgainst("How we run services under `docker-compose`.", "docker in docker-compose"),
+      false
+    );
+    assert.equal(confidentAgainst("Notes about the user table.", "what does user mean"), false);
+
+    // The controls: a request that agreed on two separate things still routes.
+    assert.equal(
+      confidentAgainst("checkout 5xx incidents and their causes.", "checkout 5xx"),
+      true
+    );
+    // Including the case above once the request supplies a second agreement of
+    // its own — `run` is carried by the description independently of the
+    // compound, so this is two, and it is meant to be.
+    assert.equal(
+      confidentAgainst(
+        "How we run services under `docker-compose`.",
+        "how do I run docker in docker-compose"
+      ),
       true
     );
   });

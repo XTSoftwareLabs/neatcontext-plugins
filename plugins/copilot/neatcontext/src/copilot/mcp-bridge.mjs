@@ -23,7 +23,7 @@ import { parseQualifiedToolName } from "../core/extensions.mjs";
 import {
   addAlias,
   DEFAULT_MODE,
-  declineFactor,
+  hasLiveDecline,
   menuEntries,
   noteDecision,
   noteDeclined,
@@ -51,8 +51,8 @@ const GET_CONTEXT_TOOL = {
     "user's own domain, documents, tools, or team conventions — some hosts do not surface " +
     "this server's initialize instructions, so the tool description is what carries that rule. " +
     "Pass the user's request as query before calling use_context: when nothing is connected, " +
-    "this tool safely auto-connects a uniquely clear match in auto mode or returns the routing " +
-    "menu needed to choose, ask, or decline.",
+    "this tool can safely auto-connect a uniquely clear match in auto mode, and otherwise " +
+    "returns the routing menu needed to choose, ask, or decline.",
   inputSchema: {
     type: "object",
     properties: {
@@ -104,11 +104,16 @@ const NOTHING_CONNECTED =
 // when nothing was ever compared. That is the same rule the comment above sets
 // out for the handshake instructions: text that cannot know the current state
 // must not assert it.
-function nothingConnectedRoutable(assessed) {
+function nothingConnectedRoutable(assessed, shared) {
   return (
     `${NOTHING_CONNECTED_HEAD} There are contexts on this machine, listed below with what each ` +
     "one is for. " +
     (assessed ? "No safe automatic match was made for this call. " : "") +
+    (shared
+      ? "Automatic connection is off in this window: this host gives it no session of its own, " +
+        "so connecting one here would change what every other window open on this folder is " +
+        "grounded in. Connect it yourself with `use_context`. "
+      : "") +
     "Follow the routing rules below: connect a clear choice with `use_context`, ask when the " +
     "choice is ambiguous, or say none covers the request. Do not ask the user to run a command " +
     "to connect a context you can already name. If none covers the request, offer " +
@@ -252,7 +257,9 @@ function nothingConnectedText(pass) {
   if (pass.mode === "manual") {
     return NOTHING_CONNECTED;
   }
-  return pass.mode === "ask" ? NOTHING_CONNECTED_ASK : nothingConnectedRoutable(pass.assessed);
+  return pass.mode === "ask"
+    ? NOTHING_CONNECTED_ASK
+    : nothingConnectedRoutable(pass.assessed, pass.shared);
 }
 
 // The selected context, or null when nothing is selected. A selection
@@ -382,8 +389,21 @@ function routingMenu(pass) {
   // SHORTLIST_MIN_CONTEXTS never builds a shortlist at all — so reading it off
   // the shortlist alone left the full menu, the one place the model has least
   // to go on, as the only caller that never heard about it.
+  //
+  // Assessed again over the shortlist, though, because the tie note names its
+  // leaders and the model is asked to say what each one covers. `pass.decision`
+  // is over the whole corpus — right for the gate, which needs the full field
+  // to know a leader is uncontested, and wrong here: with eight contexts inside
+  // the ratio band it named all eight, three of them absent from the list
+  // printed directly above, and asked the model to describe contexts it had
+  // never been shown. The verdict itself cannot differ — the shortlist is the
+  // top of the same ranking, so a leader uncontested in the corpus is
+  // uncontested in its prefix — only the names it carries.
+  //
+  // `renderMenu` needs no such trim: it is reached only below
+  // SHORTLIST_MIN_CONTEXTS, where it prints every context there is.
   return shortlist
-    ? renderShortlist(shortlist, { ...options, decision: pass.decision })
+    ? renderShortlist(shortlist, { ...options, decision: assess(shortlist) })
     : renderMenu(entries, { ...options, decision: pass.decision });
 }
 
@@ -423,7 +443,8 @@ async function routingPass(query) {
     ranked: null,
     decision: null,
     connected: null,
-    assessed: false
+    assessed: false,
+    shared: false
   };
 
   // Everything is inside one guard, starting with `sessionId()` — it reads
@@ -455,6 +476,16 @@ async function routingPass(query) {
       return pass;
     }
 
+    // Manual is the mode in which the plugin never routes, and both renderers
+    // return null for it — `renderMenu` and `renderShortlist` alike — so no
+    // reader for a ranking made here exists. Producing one anyway cost a
+    // knowledge-folder listing per context, BM25 over the corpus, and a decline
+    // lookup and decision-log walk per candidate, on every queried call, to
+    // build a list thrown away on the next line.
+    if (pass.mode === "manual") {
+      return pass;
+    }
+
     // Every candidate, not a top slice: the tie check is only as good as the
     // field it can see. The shortlist takes its own slice of this afterwards
     // rather than ranking the corpus a second time.
@@ -467,7 +498,21 @@ async function routingPass(query) {
     // From here it is about acting unasked. `assessed` stays a statement about
     // that specific question, so the nothing-connected text only claims a match
     // was looked for when one actually was.
-    if (pass.connectedId || pass.mode !== "auto" || !hasHostSessionId()) {
+    if (pass.connectedId || pass.mode !== "auto") {
+      return pass;
+    }
+
+    // Auto mode with a request to match and nothing connected — everything the
+    // feature needs except a window it can call its own. Without a host session
+    // id, `sessionId()` is the workspace digest every window on this folder
+    // shares, and connecting on that re-grounds the conversation running next
+    // door. Recorded rather than just returned: `get_context`'s own description
+    // tells the model this call can connect a clear match, and sharing an early
+    // return with the mode and connected checks left the one case where that is
+    // never true saying nothing at all. Silence there reads as "nothing
+    // matched", which is a claim about the store rather than about the host.
+    if (!hasHostSessionId()) {
+      pass.shared = true;
       return pass;
     }
     pass.assessed = true;
@@ -494,7 +539,7 @@ async function routingPass(query) {
     // route went through the model, because calling `use_context` announces the
     // switch and gives the user somewhere to say no again. Acting unasked
     // removes the announcement, so a live refusal disqualifies it outright.
-    if (declineFactor(state, target.id) < 1) {
+    if (hasLiveDecline(state, target.id)) {
       return pass;
     }
 

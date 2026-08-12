@@ -98,6 +98,10 @@ const STICKY_BOOST = 1.35;
 
 const DECLINE_HALF_LIFE_DAYS = 14;
 const DECLINE_LIFETIME_DAYS = 42;
+
+// How long a refusal bars connecting unasked, as opposed to merely discounting
+// the score. See `hasLiveDecline` for why the two differ.
+const LIVE_DECLINE_DAYS = DECLINE_HALF_LIFE_DAYS;
 const DECLINE_WEIGHT = 0.4;
 const MAX_DECLINE_COUNT = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -220,9 +224,45 @@ function capDecisions(decisions) {
   for (const decision of decisions) {
     (decision?.automatic === true ? automatic : manual).push(decision);
   }
-  return [...manual.slice(-MAX_DECISIONS), ...automatic.slice(-MAX_AUTOMATIC_DECISIONS)].sort(
-    (left, right) => (Date.parse(left?.at) || 0) - (Date.parse(right?.at) || 0)
-  );
+  return mergeByTime(manual.slice(-MAX_DECISIONS), automatic.slice(-MAX_AUTOMATIC_DECISIONS));
+}
+
+// Where a decision sits in the log, for a decision whose `at` will not parse.
+//
+// It sits where it already was. `Date.parse` returns NaN for a hand-edited
+// entry, a half-written one, or one from a future writer that spells the field
+// differently, and `NaN || 0` reads that as the first of January 1970 — which
+// sorts it to the front of the log and, because this runs on every write,
+// leaves it there for good. One unreadable timestamp then permanently rewrites
+// the chronology `familiarity` and every "why did it route that way?" read
+// back off this file.
+//
+// Each bucket is already in the order it was appended, so carrying the last
+// timestamp forward within it keeps such an entry beside the decisions it was
+// actually made among — the only evidence about it that is left.
+function timeKeys(bucket) {
+  let last = -Infinity;
+  return bucket.map((decision) => {
+    const parsed = Date.parse(decision?.at);
+    if (Number.isFinite(parsed)) {
+      last = parsed;
+    }
+    return last;
+  });
+}
+
+// A merge rather than a sort, because both sides arrive ordered and a merge is
+// the one way to interleave them that cannot move anything within its own side.
+function mergeByTime(left, right) {
+  const leftKeys = timeKeys(left);
+  const rightKeys = timeKeys(right);
+  const merged = [];
+  let l = 0;
+  let r = 0;
+  while (l < left.length && r < right.length) {
+    merged.push(leftKeys[l] <= rightKeys[r] ? left[l++] : right[r++]);
+  }
+  return [...merged, ...left.slice(l), ...right.slice(r)];
 }
 
 async function update(mutate) {
@@ -395,6 +435,30 @@ export function declineFactor(state, contextId, now = new Date()) {
   return (1 - strength) ** entry.count;
 }
 
+// Whether a refusal is recent enough to forbid connecting without being asked.
+//
+// Deliberately not `declineFactor(...) < 1`. That reads a veto off a floating
+// point comparison, and it is true for the whole six weeks the multiplier takes
+// to decay: at day 41 the factor is about 0.99, a discount the ranking treats
+// as no discount at all, while the gate was treating it as an absolute bar. It
+// also leaves the threshold — the thing a reader most needs to know — implicit
+// in a value nothing names.
+//
+// One half-life is where the line goes. For that long a refusal still carries
+// most of the weight it was given, and connecting unasked is the one route the
+// user gets no chance to stop. Past it, the multiplier is the whole answer: a
+// faded refusal is a hint, and the ranking is where hints belong.
+//
+// A timestamp from the future counts as live, matching how `declineFactor`
+// floors the age at zero. Both err towards not acting.
+export function hasLiveDecline(state, contextId, now = new Date()) {
+  const at = Date.parse(state?.declines?.[contextId]?.at);
+  if (!Number.isFinite(at)) {
+    return false;
+  }
+  return (now.getTime() - at) / DAY_MS < LIVE_DECLINE_DAYS;
+}
+
 // How much this machine's own history argues for a context: a multiplier at or
 // above 1, never below, because this is a hint and not evidence.
 //
@@ -456,7 +520,22 @@ export function noteDecision(entry) {
   return update((state) => {
     state.decisions.push({ at: new Date().toISOString(), ...entry });
     const id = entry.sessionId;
-    if (id) {
+    // A session record holds what the user chose for that window: its `mode`
+    // override and the contexts they declined in it. Every writer of one used
+    // to need a person or a model to act — `setMode`, `noteDeclined`, or a
+    // `use_context` call. An automatic route needs neither, and it arrives at
+    // about one per new session, so creating a record for one turned the
+    // `MAX_SESSIONS` cap into a shredder: twenty windows auto-connecting
+    // elsewhere would evict the record of a window where somebody had run
+    // `/neatcontext:mode manual`, `resolveMode` would fall through to the
+    // default — which is `auto` — and a session where the user had turned
+    // routing off would start routing itself again, silently, having also
+    // forgotten what they declined there.
+    //
+    // So an automatic decision keeps a record that already exists up to date,
+    // and creates none. The log still has the route: `decisions` is where a
+    // machine route belongs, and it is capped in its own bucket.
+    if (id && (state.sessions[id] || entry.automatic !== true)) {
       const session = state.sessions[id] ?? {};
       state.sessions[id] = {
         ...session,

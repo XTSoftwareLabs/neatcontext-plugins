@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1171,6 +1171,12 @@ test("Copilot get_context does not auto-connect on evidence weaker than it looks
 // Auto-connect is the one route nobody announces before it happens, so it needs
 // a session it cannot leak out of. Without an id from the host, one selection
 // file is shared by every window open on the same folder.
+//
+// And it has to say so. `get_context`'s description tells the model this call
+// can connect a clear match; on a host that publishes no session id it never
+// will, and text that goes quiet about it reads as "nothing in the store
+// matched" — a claim about the user's contexts made to excuse a limitation of
+// their editor.
 test("Copilot get_context does not auto-connect without a host session id", async (t) => {
   const home = await isolatedHome("neatcontext-copilot-auto-connect-shared-");
   const sessions = [];
@@ -1190,8 +1196,17 @@ test("Copilot get_context does not auto-connect without a host session id", asyn
   const response = await session.call(
     toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
   );
-  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
-  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  const text = response.result.content[0].text;
+  assert.doesNotMatch(text, /Automatically connected/);
+  assert.match(text, /No NeatContext Context is connected/);
+  assert.match(text, /Automatic connection is off in this window/);
+  assert.match(text, /gives it no session of its own/);
+  // The store was never the reason, so it must not be given as one.
+  assert.doesNotMatch(text, /No safe automatic match was made/);
+  // Routing itself is untouched — the model still gets the menu and the
+  // instruction to connect one by hand.
+  assert.match(text, /Checkout incident/);
+  assert.match(text, /connect a clear choice with `use_context`/);
 });
 
 // A home it cannot write to must cost the caller an optimization, never the
@@ -1409,6 +1424,120 @@ test("Copilot get_context does not auto-connect a context declined in another se
   assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
 });
 
+// A refusal stops being a veto before it stops being a discount.
+//
+// `declineFactor` decays over six weeks and returns exactly 1 only at the end
+// of them, so reading "not exactly 1" as a bar gave a refusal made a month and
+// a half ago the same absolute force as one made this morning — at day 41 the
+// multiplier is about 0.99, a number the ranking treats as no discount at all.
+test("Copilot get_context auto-connects again once a refusal has aged out", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-declined-aged-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  await createContext(home, "Checkout incident", {
+    sessionId: "monday",
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+
+  const monday = rpcSession({ ...home.env, NEATCONTEXT_SESSION_ID: "monday" });
+  sessions.push(monday);
+  await monday.call(initialize(1));
+  const declined = await monday.call(
+    toolCall(2, "use_context", { context: "Checkout incident", declined: true })
+  );
+  assert.equal(declined.result.isError, false);
+
+  // Backdated past the window in which a refusal forbids connecting unasked,
+  // but well inside the six weeks it takes the score discount to expire — the
+  // gap between the two is exactly what this pins.
+  const routingFile = path.join(home.directory, "plugin-routing.json");
+  const routing = JSON.parse(await readFile(routingFile, "utf8"));
+  const declinedIds = Object.keys(routing.declines ?? {});
+  assert.equal(declinedIds.length, 1);
+  const aged = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+  routing.declines[declinedIds[0]].at = aged;
+  await writeFile(routingFile, `${JSON.stringify(routing, null, 2)}\n`, "utf8");
+
+  const wednesday = rpcSession({ ...home.env, NEATCONTEXT_SESSION_ID: "wednesday" });
+  sessions.push(wednesday);
+  await wednesday.call(initialize(1));
+  const response = await wednesday.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /Automatically connected/);
+  assert.match(response.result.content[0].text, /Checkout incident/);
+});
+
+// A concept the user spelled twice is one piece of evidence, and the index is
+// where that used to come apart: a description containing `user_id` indexes
+// `user_id`, `user` and `id`, so all three come back as matched terms and a
+// request naming the one concept twice found two separate things to agree with.
+// Fixtures written by hand could not catch it — they were the one shape `rank`
+// never produces.
+test("Copilot get_context does not auto-connect on one concept spelled twice", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-one-concept-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-one-concept";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Identity", {
+    sessionId,
+    useWhen: "How the user_id column is populated."
+  });
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "what does user_id mean for a user?" })
+  );
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+
+  // Two things genuinely agreed on still route, so the floor did not simply
+  // move out of reach.
+  const second = await session.call(
+    toolCall(3, "get_context", { query: "user_id column populated" })
+  );
+  assert.match(second.result.content[0].text, /Automatically connected/);
+});
+
+// Manual is the mode in which the plugin never routes, so the ranking a queried
+// call used to build had no reader — both renderers return null for it. This
+// pins that skipping the work changed none of the answers.
+test("Copilot get_context answers manual mode the same way with a query", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-manual-query-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-manual-query";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  const mode = await runNode(cli, ["mode", "manual"], { env });
+  assert.match(mode.stdout, /now manual for this session/);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const withQuery = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  const withoutQuery = await session.call(toolCall(3, "get_context"));
+  assert.equal(withQuery.result.content[0].text, withoutQuery.result.content[0].text);
+  assert.doesNotMatch(withQuery.result.content[0].text, /Automatically connected/);
+  assert.match(withQuery.result.content[0].text, /No NeatContext Context is connected/);
+  // No menu and no near-tie note: manual is the mode that does not route.
+  assert.doesNotMatch(withQuery.result.content[0].text, /Checkout incident/);
+});
+
 // The near-tie is a property of the ranking, not of whether this particular
 // call was allowed to act on it. Read off the auto-connect path alone, the note
 // went silent in every situation that path bails out of — which is most of
@@ -1442,6 +1571,48 @@ test("Copilot names a near-tie even when auto-connect was never on the table", a
   assert.match(response.result.content[0].text, /match the request about equally well/);
   assert.match(response.result.content[0].text, /\*\*Codex plugin\*\* and \*\*Kimi plugin\*\*/);
   assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+// The note names the contexts it wants the model to describe, so it may only
+// name contexts the model was shown. Assessed over the whole corpus — right for
+// the auto-connect gate, which needs the full field to know a leader is
+// uncontested — it named every context in the ratio band, three of them absent
+// from the shortlist printed directly above it.
+test("Copilot names only shortlisted contexts in the near-tie note", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-tie-shortlist-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-tie-shortlist";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  // Eight is where the shortlist starts, and one description between them puts
+  // every one of them inside the band.
+  const names = [];
+  for (let index = 0; index < 8; index += 1) {
+    const name = `Team ${index}`;
+    names.push(name);
+    await createContext(home, name, {
+      sessionId,
+      useWhen: "plugin packaging and marketplace manifests"
+    });
+  }
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "plugin packaging and marketplace manifests" })
+  );
+  const text = response.result.content[0].text;
+  assert.match(text, /match the request about equally well/);
+
+  const note = text.split("\n").find((line) => line.includes("match the request about equally"));
+  const named = names.filter((name) => note.includes(`**${name}**`));
+  const listed = names.filter((name) => text.includes(`- **${name}**`));
+  assert.equal(listed.length, 5, "the shortlist shows five");
+  assert.deepEqual(named, listed, "the note names those five and no others");
+  assert.doesNotMatch(text, /Automatically connected/);
 });
 
 // A selection pointing at a context that is gone is nothing connected —
@@ -1491,24 +1662,33 @@ test("Copilot reports the connection it made even when the decision log cannot b
   });
   const sessionId = "copilot-auto-connect-log-fails";
   const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
-  await createContext(home, "Checkout incident", {
+  // Matchable by name, which lives in the context's own manifest. The routing
+  // description would not survive what happens next: `--use-when` is stored as
+  // a card inside the very file this test is about to make unwritable, so a
+  // context relying on one stops matching at the same moment writes start
+  // failing, and the test would pass without the path under test ever running.
+  await createContext(home, "Pgbouncer exhaustion", {
     sessionId,
     useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
   });
-  // Read-only where the routing state file goes: it still reads, so the card
-  // that makes this context matchable survives, but every write to it fails —
-  // which is what a hostile permission set looks like from here.
+  // A directory where the routing state file goes. Writes to it fail whoever is
+  // running — `chmod 0o444` denies nothing to root, which is the default user in
+  // most Docker CI images, and on Windows sets a read-only attribute Node's
+  // `writeFile` is not obliged to honour. Reads fail too, so the card written at
+  // creation is gone; the name is what the match is left with, which is the
+  // point. The unwritable-selection test above forces the same failure from the
+  // other side, writing a file where a directory is expected.
   const routingFile = path.join(home.directory, "plugin-routing.json");
-  await chmod(routingFile, 0o444);
-  t.after(() => chmod(routingFile, 0o644).catch(() => undefined));
+  await rm(routingFile, { force: true });
+  await mkdir(routingFile, { recursive: true });
 
   const session = rpcSession(env);
   sessions.push(session);
   await session.call(initialize(1));
   const response = await session.call(
-    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+    toolCall(2, "get_context", { query: "pgbouncer pool exhaustion" })
   );
-  assert.match(response.result.content[0].text, /Checkout incident/);
+  assert.match(response.result.content[0].text, /Pgbouncer exhaustion/);
   assert.doesNotMatch(response.result.content[0].text, /No NeatContext Context is connected/);
 });
 
