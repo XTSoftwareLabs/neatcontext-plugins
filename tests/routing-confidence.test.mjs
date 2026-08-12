@@ -193,6 +193,81 @@ describe("isConfidentMatch", () => {
     assert.equal(isConfidentMatch(leader, "订单延迟 排查"), false, "排查 did not match");
   });
 
+  it("leaves a no-space script unable to reach the floor, deliberately", () => {
+    // A script written without spaces is one part of the request however long
+    // it runs, so it can supply at most one pairing. Auto-connect is therefore
+    // out of reach for these requests until this can segment them, and the
+    // escape hatches below are the whole of what is left. This is a decision,
+    // not an oversight: the routing menu still answers, which is what every
+    // user gets today.
+    const leader = candidate(
+      "订单系统",
+      hit("订单"),
+      hit("延迟"),
+      hit("排查"),
+      hit("步骤"),
+      hit("订"),
+      hit("单")
+    );
+    assert.equal(isConfidentMatch(leader, "订单延迟排查步骤"), false);
+
+    // Naming the context still works, and so does an alias the user wrote,
+    // when it is the whole request.
+    assert.equal(isConfidentMatch(candidate("订单排查"), "订单排查"), true);
+    assert.equal(
+      isConfidentMatch(leader, "订单排查", { aliases: ["订单排查"] }),
+      true
+    );
+  });
+
+  it("does not black out Korean, which is written with spaces", () => {
+    // The limitation above is about scripts with no spaces, not about CJK: a
+    // Korean request separates its eojeol and goes through the ordinary path.
+    const leader = candidate("주문 지연", hit("주문"), hit("지연"));
+    assert.equal(isConfidentMatch(leader, "주문 지연"), true);
+  });
+
+  it("does not let one concept spelled two ways count as two", () => {
+    // `user_id` tokenizes to [user_id, user, id] and `user?` to [user], so both
+    // words agree on the single carried token `user`. Two parts of the request,
+    // one thing agreed on — which is one piece of evidence, not two.
+    assert.equal(
+      isConfidentMatch(candidate("Users", hit("user")), "what does user_id mean for a user?"),
+      false
+    );
+    assert.equal(
+      isConfidentMatch(candidate("Docker", hit("docker")), "how do I run docker in docker-compose"),
+      false
+    );
+    assert.equal(
+      isConfidentMatch(candidate("Checkout API", hit("api")), "is the api part of checkout-api?"),
+      false
+    );
+    // Two compounds sharing their only carried token is still one concept.
+    assert.equal(
+      isConfidentMatch(candidate("Docker", hit("docker")), "docker-compose docker-swarm"),
+      false
+    );
+    // Two spellings that are genuinely two things still count as two.
+    assert.equal(
+      isConfidentMatch(candidate("Users", hit("user"), hit("users")), "user users"),
+      true
+    );
+  });
+
+  it("pairs the same way whichever order the words arrive in", () => {
+    // `alpha-beta` can be spent on either token, so a first-come pairing counts
+    // this as two one way round and one the other. Rewording a sentence must
+    // not change where it routes.
+    const leader = candidate("Alpha", hit("alpha"), hit("beta"));
+    assert.equal(isConfidentMatch(leader, "alpha alpha-beta"), true);
+    assert.equal(isConfidentMatch(leader, "alpha-beta alpha"), true);
+
+    const single = candidate("Alpha", hit("alpha"));
+    assert.equal(isConfidentMatch(single, "alpha alpha-beta"), false);
+    assert.equal(isConfidentMatch(single, "alpha-beta alpha"), false);
+  });
+
   it("does not let two filenames stand in for what a context is for", () => {
     const leader = candidate("Payments", hit("deploy", "files"), hit("runbook", "files"));
     assert.equal(isConfidentMatch(leader, "where is the deploy runbook?"), false);
@@ -378,6 +453,22 @@ describe("renderMenu with a decision", () => {
     const clear = assess([{ ...entries[0], score: 10 }, { ...entries[1], score: 2 }]);
     assert.ok(!routing.renderMenu(entries, { mode: "auto", decision: clear }).includes("equally well"));
     assert.ok(!routing.renderMenu(entries, { mode: "auto" }).includes("equally well"));
+  });
+
+  // The note is its own paragraph. Run into the guidance that follows it, the
+  // two read as one sentence about the wrong thing.
+  it("stands the near-tie note apart from the guidance around it", () => {
+    const decision = assess(scored);
+    for (const text of [
+      routing.renderMenu(entries, { mode: "auto", decision }),
+      routing.renderShortlist(entries, { mode: "auto", decision })
+    ]) {
+      const lines = text.split("\n");
+      const at = lines.findIndex((line) => line.includes("match the request about equally well"));
+      assert.ok(at > 0, "the note is there to be spaced");
+      assert.equal(lines[at - 1], "");
+      assert.equal(lines[at + 1], "");
+    }
   });
 });
 

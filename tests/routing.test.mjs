@@ -169,6 +169,53 @@ describe("routing metadata", () => {
     assert.equal(updated.decisions.at(-1).to, "Payments");
   });
 
+  it("keeps the machine's own routes from evicting the user's", async () => {
+    // Automatic routes arrive at about one per new session, so a shared cap
+    // would drain the log of exactly the manual selections `familiarity` reads
+    // — and `familiarity` skipping them is what would keep anyone from
+    // noticing. Two buckets, merged back in time order.
+    const record = await create("Capped", "cap check");
+    const at = (minute) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
+    for (let index = 0; index < 40; index += 1) {
+      await routing.noteDecision({
+        sessionId: `auto-${index}`,
+        from: null,
+        to: record.name,
+        at: at(index),
+        automatic: true
+      });
+    }
+    await routing.noteDecision({
+      sessionId: "human",
+      from: null,
+      to: record.name,
+      at: at(100),
+      requested: true
+    });
+    for (let index = 0; index < 40; index += 1) {
+      await routing.noteDecision({
+        sessionId: `auto-late-${index}`,
+        from: null,
+        to: record.name,
+        at: at(200 + index),
+        automatic: true
+      });
+    }
+
+    const state = await routing.readRouting();
+    const automatic = state.decisions.filter((decision) => decision.automatic === true);
+    const manual = state.decisions.filter((decision) => decision.automatic !== true);
+    assert.equal(automatic.length, 20, "automatic routes keep only a short tail");
+    assert.equal(
+      manual.some((decision) => decision.sessionId === "human"),
+      true,
+      "the one manual decision survived 80 automatic ones"
+    );
+    // Still a chronology, which is how everything downstream reads it.
+    const times = state.decisions.map((decision) => Date.parse(decision.at));
+    assert.deepEqual(times, [...times].sort((left, right) => left - right));
+  });
+
   it("enforces auto, ask, manual, declined, and already-connected policies", () => {
     const base = { mode: "ask", sessions: {} };
     assert.equal(

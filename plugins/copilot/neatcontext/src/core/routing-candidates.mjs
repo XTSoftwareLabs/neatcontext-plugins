@@ -125,18 +125,49 @@ export function normalizeRoutingText(text) {
   return text.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// The request split the way the user wrote it, deduplicated: one entry per
-// whitespace-separated run.
+// The request as the user wrote it: one entry per whitespace-separated run.
 //
-// This is the unit the floor counts, and it has to be, because a token is not
-// one. `tokenize` deliberately expands a single `checkout-api` into
-// `[checkout-api, checkout, api]` and a two-character CJK request into seven
-// tokens — good for recall, but counting those as agreement means one word, or
-// any CJK request at all, clears a floor meant to require two.
-function queryTerms(query) {
-  return new Set(normalizeRoutingText(query).split(" ").filter(Boolean));
+// This is the unit the floor counts parts of the request in, and both the term
+// floor and the alias floor have to count it the same way, so the split lives
+// in one place rather than being repeated as a convention across six synced
+// copies.
+function words(text) {
+  return normalizeRoutingText(text).split(" ").filter(Boolean);
 }
 
+// Deduplicated, because the same word typed twice is not two parts agreeing.
+function queryTerms(query) {
+  return new Set(words(query));
+}
+
+// How much of the request genuinely agreed with this context.
+//
+// Evidence has to be independent on *both* sides, and each side alone is a
+// bypass the other does not catch:
+//
+//   - Counting parts of the request lets one concept spelled two ways pass as
+//     two. "what does user_id mean for a user?" is two words agreeing on the
+//     single token `user`.
+//   - Counting things agreed on lets one compound word pass as several.
+//     `tokenize` expands `checkout-api` into `[checkout-api, checkout, api]`,
+//     so a request of that one word would otherwise clear a floor of three.
+//
+// So what is counted is pairings: the largest set of (part of the request,
+// thing it agreed on) pairs where no two pairs share either side. That is a
+// maximum bipartite matching, and it is worth being exact rather than greedy
+// about it — a greedy pass gives different answers for the same words in a
+// different order, and "why does rewording the sentence change the route?" is
+// not a question this should ever raise.
+//
+// One consequence is deliberate and documented: a script written without
+// spaces — Chinese, or kanji-dense Japanese — is a single part of the request
+// however long it is, so it can contribute at most one pairing and can never
+// clear the floor. Auto-connect is therefore unreachable for those requests
+// without an exact name or whole-request alias match, until this can segment
+// them. That is a real limitation rather than a rounding error, and it is the
+// conservative direction: the routing menu still answers, exactly as it does
+// today for every user. It is narrower than "CJK" — Korean is written with
+// spaces between eojeol and goes through the ordinary path.
 function agreeingTerms(candidate, query) {
   const carried = new Set(
     (candidate.matched ?? []).filter((term) => {
@@ -147,13 +178,38 @@ function agreeingTerms(candidate, query) {
   if (carried.size === 0) {
     return 0;
   }
-  let agreeing = 0;
+  const options = [];
   for (const term of queryTerms(query)) {
-    if (tokenize(term).some((token) => carried.has(token))) {
-      agreeing += 1;
+    const agreed = [...new Set(tokenize(term))].filter((token) => carried.has(token));
+    if (agreed.length > 0) {
+      options.push(agreed);
     }
   }
-  return agreeing;
+
+  // Kuhn's algorithm: give each part of the request something to agree on,
+  // letting an earlier one give up its choice whenever it has another.
+  const takenBy = new Map();
+  const claim = (part, tried) => {
+    for (const token of options[part]) {
+      if (tried.has(token)) {
+        continue;
+      }
+      tried.add(token);
+      const holder = takenBy.get(token);
+      if (holder === undefined || claim(holder, tried)) {
+        takenBy.set(token, part);
+        return true;
+      }
+    }
+    return false;
+  };
+  let paired = 0;
+  for (let part = 0; part < options.length; part += 1) {
+    if (claim(part, new Set())) {
+      paired += 1;
+    }
+  }
+  return paired;
 }
 
 // An alias is the one routing signal the user authored by hand, at the moment
@@ -164,21 +220,17 @@ function agreeingTerms(candidate, query) {
 // alias therefore has to be the whole request; a longer one has to appear
 // contiguously in the request's tokens.
 //
-// One word means one word the user typed, counted the way `queryTerms` counts
-// the request — not the tokens the index derived from it. `tokenize` expands
-// `checkout-api` into three and `user_id` into three, and reading that as a
-// multi-word alias would reopen the bypass for every ticket id, service name
-// and API version anyone is likely to register.
+// One word means one word the user typed, counted by `words` exactly as the
+// term floor counts the request — not the tokens the index derived from it.
+// `tokenize` expands `checkout-api` into three and `user_id` into three, and
+// reading that as a multi-word alias would reopen the bypass for every ticket
+// id, service name and API version anyone is likely to register.
 //
 // It has to survive tokenizing as two, as well. `the api` is two words the user
 // typed, but `tokenize` drops the stopword and leaves one, and a one-token
 // contiguous check is just "does this word appear anywhere" — the very test the
 // first floor exists to prevent. `the API`, `our PR`, `how LM works` are how
 // people write these aliases down, so both floors have to hold.
-function wordCount(text) {
-  return normalizeRoutingText(text).split(" ").filter(Boolean).length;
-}
-
 function matchesAlias(aliases, query) {
   const normalized = normalizeRoutingText(query);
   const queryTokens = tokenize(query);
@@ -187,7 +239,7 @@ function matchesAlias(aliases, query) {
     if (aliasTokens.length === 0) {
       return false;
     }
-    if (wordCount(alias) < 2 || aliasTokens.length < 2) {
+    if (words(alias).length < 2 || aliasTokens.length < 2) {
       return normalizeRoutingText(alias) === normalized;
     }
     return queryTokens.some((_, start) =>

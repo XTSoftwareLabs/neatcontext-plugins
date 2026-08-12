@@ -47,6 +47,16 @@ const SCHEMA = 2;
 const MAX_USE_WHEN = 240;
 const MAX_ALIASES = 12;
 const MAX_DECISIONS = 100;
+
+// Automatic routes are capped separately, and far shorter.
+//
+// They arrive at roughly one per new session, so a single shared cap would see
+// them evict the manual selections this log exists for — and `familiarity`
+// skipping them is exactly what would keep anyone from noticing the ground
+// truth had drained away. Manual decisions keep their own hundred; the machine
+// ones keep a short tail, which is all that is ever read back when working out
+// why a session routed the way it did.
+const MAX_AUTOMATIC_DECISIONS = 20;
 const MAX_SESSIONS = 20;
 
 // How long a refusal keeps counting for.
@@ -192,12 +202,26 @@ async function writeRouting(state) {
         ...(MODES.includes(mode) ? { mode } : {}),
         sessions: Object.fromEntries(sessions),
         declines: pruneDeclines(state.declines, Date.now()),
-        decisions: state.decisions.slice(-MAX_DECISIONS)
+        decisions: capDecisions(state.decisions)
       },
       null,
       2
     )}\n`,
     { encoding: "utf8", mode: 0o600 }
+  );
+}
+
+// Trimmed in two buckets rather than one, so the machine's own routes cannot
+// push the user's out of the record. Merged back in time order afterwards,
+// because everything downstream reads this as a chronology.
+function capDecisions(decisions) {
+  const manual = [];
+  const automatic = [];
+  for (const decision of decisions) {
+    (decision?.automatic === true ? automatic : manual).push(decision);
+  }
+  return [...manual.slice(-MAX_DECISIONS), ...automatic.slice(-MAX_AUTOMATIC_DECISIONS)].sort(
+    (left, right) => (Date.parse(left?.at) || 0) - (Date.parse(right?.at) || 0)
   );
 }
 
@@ -482,7 +506,7 @@ export function renderMenu(entries, { connectedId, mode, decision } = {}) {
   lines.push("");
   const tie = tieNote(decision);
   if (tie) {
-    lines.push(tie);
+    lines.push(tie, "");
   }
   lines.push(...routingInstructions(mode, Boolean(connectedId)));
   return lines.join("\n");
@@ -547,9 +571,12 @@ export function renderShortlist(entries, { connectedId, mode, decision } = {}) {
       ? "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — that is a reason to stay where you are, not to reach for the closest one here."
       : "These are the contexts on this machine whose own description matched the request, best first. Others exist and did not match — so if none of these covers the request, say the store does not have it rather than reaching for the closest one here."
   );
+  // Its own paragraph: it is the one line asking the model to stop and ask,
+  // and run together with the instructions around it that is what it stops
+  // looking like.
   const tie = tieNote(decision);
   if (tie) {
-    lines.push(tie);
+    lines.push("", tie, "");
   }
   lines.push(...routingInstructions(mode, Boolean(connectedId)));
   return lines.join("\n");

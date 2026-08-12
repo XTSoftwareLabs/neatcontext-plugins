@@ -12,13 +12,20 @@
 //   FAKE_MCP_ERROR_TOOL    return a JSON-RPC error when this tool is called
 //   FAKE_MCP_NOISE         write a non-JSON banner line to stdout first
 //   FAKE_MCP_ECHO_ENV      report this variable's value from the `echo_env` tool
+//   FAKE_MCP_PID_FILE      write this process's pid here, so a test that cares
+//                          whether the child outlived its host can go and look
 
+import { writeFileSync } from "node:fs";
 import readline from "node:readline";
 
 const required = process.env.FAKE_MCP_REQUIRE_ENV;
 if (required && !process.env[required]) {
   process.stderr.write(`missing ${required}\n`);
   process.exit(1);
+}
+
+if (process.env.FAKE_MCP_PID_FILE) {
+  writeFileSync(process.env.FAKE_MCP_PID_FILE, String(process.pid), "utf8");
 }
 
 const toolNames = (process.env.FAKE_MCP_TOOLS ?? "search_incidents,get_incident").split(",");

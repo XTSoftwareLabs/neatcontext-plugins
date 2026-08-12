@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -237,6 +237,86 @@ async function createContext(
   assert.match(result.stdout, new RegExp(`Created the "${name}" context`));
   return result;
 }
+
+// An auto-connection is a context switch that never went through `use_context`,
+// so the teardown it owes is the same one a switch owes: whatever the previous
+// context had running, stopped. Clearing the local arrays only hides those
+// tools from the session — the child processes behind them keep running until
+// the bridge exits, which for a long-lived server is never.
+test("Copilot stops the previous context's extensions when it auto-connects", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-dispose-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-dispose";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Payments", { sessionId, useWhen: "payment reconciliation" });
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+
+  const connect = await runNode(cli, ["use", "Payments"], { env });
+  assert.match(connect.stdout, /Connected the "Payments" context/);
+  const declared = await runNode(
+    cli,
+    ["extensions", "add", "pagerduty", "--capability", "Read incidents.", "--tools", "get_incident"],
+    { env }
+  );
+  assert.match(declared.stdout, /now expects the "pagerduty" extension/);
+
+  const pidFile = path.join(home.directory, "extension.pid");
+  await writeFile(
+    path.join(home.directory, "extensions.json"),
+    `${JSON.stringify({
+      schema: 1,
+      extensions: {
+        pagerduty: {
+          command: process.execPath,
+          args: [path.join(here, "fake-extension-server.mjs")],
+          env: { FAKE_MCP_PID_FILE: pidFile }
+        }
+      }
+    })}\n`,
+    "utf8"
+  );
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const listed = await session.call({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.ok(listed.result.tools.some((tool) => tool.name === "pagerduty__get_incident"));
+  const pid = Number(await readFile(pidFile, "utf8"));
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  assert.doesNotThrow(() => process.kill(pid, 0), "the extension server is running");
+  t.after(() => {
+    try {
+      process.kill(pid);
+    } catch {
+      // Already gone, which is the point of the test.
+    }
+  });
+
+  // Out of band, the way `/neatcontext:disconnect` does it: the next call finds
+  // nothing connected, and a request that plainly belongs elsewhere.
+  const disconnect = await runNode(cli, ["disconnect"], { env });
+  assert.equal(disconnect.code, 0);
+  const auto = await session.call(
+    toolCall(3, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(auto.result.content[0].text, /Checkout incident/);
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return; // gone, which is what this test is for
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail("the previous context's extension server outlived the auto-connection");
+});
 
 test("Copilot plugin manifest is complete, version-aligned, and listed in the marketplace", async () => {
   const [pluginText, marketplaceText, packageText, bridgeText, readme, copilotReadme] =
@@ -908,6 +988,17 @@ test("Copilot narrows the routing menu to the request", async (t) => {
   );
   assert.match(unmatched.result.content[0].text, /## Contexts available on this machine/);
   assert.match(unmatched.result.content[0].text, /Docker container/);
+
+  // The shape users actually type. Narrowing a full sentence is the case worth
+  // guarding, and it needs a connected session to test on its own terms:
+  // unconnected, this query auto-connects and never renders a shortlist.
+  await session.call(toolCall(6, "use_context", { context: "Session drift", requested: true }));
+  const sentence = await session.call(
+    toolCall(7, "get_context", { query: "why is checkout throwing 5xx" })
+  );
+  assert.match(sentence.result.content[0].text, /## Contexts that match what the user just asked/);
+  assert.match(sentence.result.content[0].text, /INC-1001 checkout/);
+  assert.ok(!sentence.result.content[0].text.includes("Docker container"));
 });
 
 // The interaction auto-connect actually introduced, which nothing else covers:
@@ -1281,6 +1372,144 @@ test("Copilot get_context preserves ask mode for a clear match", async (t) => {
   assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
   assert.match(response.result.content[0].text, /Routing is on \(ask\)/);
   assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+// A refusal is per-session in `switchPolicy`, and globally only a score
+// discount — which cannot change an outcome in a store too small to have a
+// rival. Through the model that was survivable, because `use_context`
+// announces the switch and the user can say no again. Acting unasked removes
+// the announcement, so the refusal has to be able to stop it outright.
+test("Copilot get_context does not auto-connect a context declined in another session", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-declined-global-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  await createContext(home, "Checkout incident", {
+    sessionId: "monday",
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+
+  const monday = rpcSession({ ...home.env, NEATCONTEXT_SESSION_ID: "monday" });
+  sessions.push(monday);
+  await monday.call(initialize(1));
+  const declined = await monday.call(
+    toolCall(2, "use_context", { context: "Checkout incident", declined: true })
+  );
+  assert.equal(declined.result.isError, false);
+
+  // A different session entirely, with a clean slate of its own.
+  const wednesday = rpcSession({ ...home.env, NEATCONTEXT_SESSION_ID: "wednesday" });
+  sessions.push(wednesday);
+  await wednesday.call(initialize(1));
+  const response = await wednesday.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+// The near-tie is a property of the ranking, not of whether this particular
+// call was allowed to act on it. Read off the auto-connect path alone, the note
+// went silent in every situation that path bails out of — which is most of
+// them, and a connected session on a small store is the commonest.
+test("Copilot names a near-tie even when auto-connect was never on the table", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-tie-connected-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-tie-connected";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Somewhere else", { sessionId, useWhen: "unrelated bookkeeping" });
+  await createContext(home, "Codex plugin", {
+    sessionId,
+    useWhen: "plugin packaging and marketplace manifests"
+  });
+  await createContext(home, "Kimi plugin", {
+    sessionId,
+    useWhen: "plugin packaging and marketplace manifests"
+  });
+  const use = await runNode(cli, ["use", "Somewhere else"], { env });
+  assert.match(use.stdout, /Connected the "Somewhere else" context/);
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "plugin packaging and marketplace manifests" })
+  );
+  assert.match(response.result.content[0].text, /match the request about equally well/);
+  assert.match(response.result.content[0].text, /\*\*Codex plugin\*\* and \*\*Kimi plugin\*\*/);
+  assert.doesNotMatch(response.result.content[0].text, /Automatically connected/);
+});
+
+// A selection pointing at a context that is gone is nothing connected —
+// `readSelection` deletes the file on its way out. Read as connected, the one
+// call the user most needs a straight answer on says nothing is connected while
+// carrying the guards written for a session that has somewhere to leave.
+test("Copilot treats a stale selection as nothing connected", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-stale-selection-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-stale-selection";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+
+  // Written after the handshake on purpose: `readSelection` clears a stale file
+  // as it reads it, so a selection planted before the session starts is gone by
+  // the time the call under test arrives.
+  const selectionFile = path.join(home.directory, "plugin-sessions", `${sessionId}.json`);
+  await mkdir(path.dirname(selectionFile), { recursive: true });
+  await writeFile(
+    selectionFile,
+    JSON.stringify({ contextId: "gone", contextName: "Gone" }),
+    "utf8"
+  );
+
+  const response = await session.call(toolCall(2, "get_context"));
+  assert.match(response.result.content[0].text, /No NeatContext Context is connected/);
+  assert.doesNotMatch(response.result.content[0].text, /no longer exists on disk/);
+});
+
+// The connection is made by `applySelection`; the decision log is bookkeeping
+// that follows it. Written in the other order, a log failure produced a pass
+// that said nothing was connected and a disk that said otherwise.
+test("Copilot reports the connection it made even when the decision log cannot be written", async (t) => {
+  const home = await isolatedHome("neatcontext-copilot-auto-connect-log-fails-");
+  const sessions = [];
+  t.after(async () => {
+    await Promise.all(sessions.map((session) => session.close()));
+  });
+  const sessionId = "copilot-auto-connect-log-fails";
+  const env = { ...home.env, NEATCONTEXT_SESSION_ID: sessionId };
+  await createContext(home, "Checkout incident", {
+    sessionId,
+    useWhen: "checkout-api 5xx from pgbouncer pool exhaustion"
+  });
+  // Read-only where the routing state file goes: it still reads, so the card
+  // that makes this context matchable survives, but every write to it fails —
+  // which is what a hostile permission set looks like from here.
+  const routingFile = path.join(home.directory, "plugin-routing.json");
+  await chmod(routingFile, 0o444);
+  t.after(() => chmod(routingFile, 0o644).catch(() => undefined));
+
+  const session = rpcSession(env);
+  sessions.push(session);
+  await session.call(initialize(1));
+  const response = await session.call(
+    toolCall(2, "get_context", { query: "checkout-api 5xx pgbouncer pool exhaustion" })
+  );
+  assert.match(response.result.content[0].text, /Checkout incident/);
+  assert.doesNotMatch(response.result.content[0].text, /No NeatContext Context is connected/);
 });
 
 test("Copilot get_context never auto-switches an existing connection", async (t) => {
