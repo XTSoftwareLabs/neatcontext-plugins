@@ -169,6 +169,163 @@ describe("routing metadata", () => {
     assert.equal(updated.decisions.at(-1).to, "Payments");
   });
 
+  it("keeps the machine's own routes from evicting the user's", async () => {
+    // Automatic routes arrive at about one per new session, so a shared cap
+    // would drain the log of exactly the manual selections `familiarity` reads
+    // — and `familiarity` skipping them is what would keep anyone from
+    // noticing. Two buckets, merged back in time order.
+    const record = await create("Capped", "cap check");
+    const at = (minute) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
+    for (let index = 0; index < 40; index += 1) {
+      await routing.noteDecision({
+        sessionId: `auto-${index}`,
+        from: null,
+        to: record.name,
+        at: at(index),
+        automatic: true
+      });
+    }
+    await routing.noteDecision({
+      sessionId: "human",
+      from: null,
+      to: record.name,
+      at: at(100),
+      requested: true
+    });
+    for (let index = 0; index < 40; index += 1) {
+      await routing.noteDecision({
+        sessionId: `auto-late-${index}`,
+        from: null,
+        to: record.name,
+        at: at(200 + index),
+        automatic: true
+      });
+    }
+
+    const state = await routing.readRouting();
+    const automatic = state.decisions.filter((decision) => decision.automatic === true);
+    const manual = state.decisions.filter((decision) => decision.automatic !== true);
+    assert.equal(automatic.length, 20, "automatic routes keep only a short tail");
+    assert.equal(
+      manual.some((decision) => decision.sessionId === "human"),
+      true,
+      "the one manual decision survived 80 automatic ones"
+    );
+    // Still a chronology, which is how everything downstream reads it.
+    const times = state.decisions.map((decision) => Date.parse(decision.at));
+    assert.deepEqual(times, [...times].sort((left, right) => left - right));
+  });
+
+  it("leaves a decision whose timestamp will not parse where it already was", async () => {
+    // `Date.parse` gives NaN for a hand-edited entry, a half-written one, or
+    // one whose writer spelled the field differently — and `NaN || 0` read that
+    // as 1970, which sorted it to the front. This runs on every write, so the
+    // move was permanent: one unreadable timestamp rewrote the chronology every
+    // "why did it route that way?" read is made from.
+    const record = await create("Undated", "undated check");
+    const at = (minute) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
+    await routing.noteDecision({ sessionId: "a", from: null, to: record.name, at: at(1) });
+    await routing.noteDecision({ sessionId: "b", from: null, to: record.name, at: at(2) });
+    await routing.noteDecision({ sessionId: "c", from: null, to: record.name, at: at(3) });
+
+    const file = path.join(home, "plugin-routing.json");
+    const edited = JSON.parse(await readFile(file, "utf8"));
+    delete edited.decisions[1].at;
+    await writeFile(file, `${JSON.stringify(edited, null, 2)}\n`, "utf8");
+
+    // Any write re-caps the log, which is where the relocation happened.
+    await routing.noteDecision({ sessionId: "d", from: null, to: record.name, at: at(4) });
+    const state = await routing.readRouting();
+    assert.deepEqual(
+      state.decisions.map((decision) => decision.sessionId),
+      ["a", "b", "c", "d"]
+    );
+
+    // And it stays put however many writes follow, rather than drifting one
+    // place per write.
+    await routing.noteDecision({ sessionId: "e", from: null, to: record.name, at: at(5) });
+    const again = await routing.readRouting();
+    assert.deepEqual(
+      again.decisions.map((decision) => decision.sessionId),
+      ["a", "b", "c", "d", "e"]
+    );
+  });
+
+  it("stops treating a refusal as a veto long before it stops discounting", () => {
+    // `declineFactor` decays over six weeks and hits exactly 1 only at the end
+    // of them. Reading "not exactly 1" as a bar on connecting unasked gave a
+    // refusal made a month and a half ago the same absolute force as one made
+    // this morning — at day 41 the multiplier is about 0.99.
+    const now = new Date("2026-03-01T00:00:00.000Z");
+    const daysAgo = (days) => ({
+      declines: {
+        one: { at: new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString(), count: 1 }
+      }
+    });
+
+    assert.equal(routing.hasLiveDecline(daysAgo(1), "one", now), true);
+    assert.equal(routing.hasLiveDecline(daysAgo(13), "one", now), true);
+    assert.equal(routing.hasLiveDecline(daysAgo(20), "one", now), false);
+    assert.equal(routing.hasLiveDecline(daysAgo(41), "one", now), false);
+    // Still a discount at that age, which is the whole point of separating them.
+    assert.ok(routing.declineFactor(daysAgo(20), "one", now) < 1);
+
+    assert.equal(routing.hasLiveDecline({ declines: {} }, "one", now), false);
+    assert.equal(routing.hasLiveDecline({}, "one", now), false);
+    assert.equal(routing.hasLiveDecline({ declines: { one: { at: "nonsense" } } }, "one", now), false);
+    // A clock that jumped errs towards not acting, as `declineFactor` does.
+    assert.equal(routing.hasLiveDecline(daysAgo(-5), "one", now), true);
+  });
+
+  it("does not let the machine's own routes evict a window's settings", async () => {
+    // A session record holds what the user chose for that window — its mode
+    // override, and what they declined in it. Every writer used to need a
+    // person or a model; an automatic route needs neither and arrives at about
+    // one per new session, so creating a record for one turned the session cap
+    // into a shredder: twenty windows connecting themselves elsewhere evicted
+    // the record of a window that had been put in manual, `resolveMode` fell
+    // through to the default — `auto` — and a session where the user had turned
+    // routing off started routing itself again.
+    const record = await create("Evictions", "eviction check");
+    await routing.setMode("manual", { id: "pinned" });
+    await routing.noteDeclined(record.id, { id: "pinned" });
+
+    for (let index = 0; index < 40; index += 1) {
+      await routing.noteDecision({
+        sessionId: `auto-${index}`,
+        from: null,
+        to: record.name,
+        automatic: true
+      });
+    }
+
+    const state = await routing.readRouting();
+    assert.equal(routing.resolveMode(state, "pinned"), "manual");
+    assert.deepEqual(state.sessions.pinned.declined, [record.id]);
+    assert.equal(
+      routing.switchPolicy(state, { id: "pinned", targetId: record.id, connectedId: null }).reason,
+      "manual-mode"
+    );
+    // The routes themselves are still on the record; `decisions` is where a
+    // machine route belongs, and it is capped in a bucket of its own.
+    assert.equal(
+      state.decisions.filter((decision) => decision.automatic === true).length > 0,
+      true
+    );
+
+    // A window that already has a record still has its switches counted, so an
+    // automatic route in a session the user has touched is not invisible.
+    await routing.noteDecision({
+      sessionId: "pinned",
+      from: null,
+      to: record.name,
+      automatic: true
+    });
+    const after = await routing.readRouting();
+    assert.equal(after.sessions.pinned.switches, 1);
+    assert.equal(routing.resolveMode(after, "pinned"), "manual");
+  });
+
   it("enforces auto, ask, manual, declined, and already-connected policies", () => {
     const base = { mode: "ask", sessions: {} };
     assert.equal(

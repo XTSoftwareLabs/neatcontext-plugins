@@ -176,8 +176,32 @@ describe("get_context with nothing connected", () => {
       await session.send("initialize", { protocolVersion: "2025-11-25" });
       const text = await ask(session, "why is checkout-api throwing 5xx?");
 
-      assert.match(text, /Connect the one this request belongs to with `use_context`/);
-      assert.match(text, /do not ask the user to run a command/);
+      assert.match(text, /Automatically connected "Incident"/);
+      assert.match(text, /connected context: Incident/i);
+      assert.doesNotMatch(text, /No NeatContext Context is connected/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  // Auto-connect firing first does not retire either fault this suite was
+  // written for — it only moves them off the path the test above walks. Both
+  // are still reachable on every call that declines to connect, which is most
+  // of them, so each keeps a home that still runs.
+
+  it("never answers 'what now?' with a slash command when it declines to connect", async () => {
+    // Two contexts describing the same thing: the request matches both, so
+    // auto-connect correctly refuses and the text below is what the model gets.
+    await create("Codex packaging", "plugin packaging manifests and marketplace steps");
+    await create("Kimi packaging", "plugin packaging manifests and marketplace steps");
+    const session = bridge("declines-cleanly");
+    try {
+      await session.send("initialize", { protocolVersion: "2025-11-25" });
+      const text = await ask(session, "plugin packaging manifests marketplace steps");
+
+      assert.doesNotMatch(text, /Automatically connected/);
+      assert.match(text, /connect a clear choice with `use_context`/);
+      assert.match(text, /do not ask the user to run a command/i);
       // The regression itself: the old text opened by telling the model to send
       // the user to /neatcontext:use, and that is what it acted on.
       assert.doesNotMatch(
@@ -185,7 +209,11 @@ describe("get_context with nothing connected", () => {
         /\/neatcontext:use/,
         "the lead paragraph must not answer 'what now?' with a slash command"
       );
-      assert.match(text, /Incident/);
+      // And having refused a near-tie itself, it has to say so. Silently
+      // declining leaves the model to pick one of the two at random, which is
+      // the wrong-context re-grounding the tie check exists to prevent.
+      assert.match(text, /match the request about equally well/);
+      assert.match(text, /\*\*Codex packaging\*\* and \*\*Kimi packaging\*\*/);
     } finally {
       await session.close();
     }
@@ -199,10 +227,32 @@ describe("get_context with nothing connected", () => {
     const session = bridge("upgraded-machine");
     try {
       await session.send("initialize", { protocolVersion: "2025-11-25" });
-      assert.match(await ask(session, "checkout-api 5xx"), /Routing is on \(auto\)/);
+      const text = await ask(session, "checkout-api 5xx");
+      assert.match(text, /Automatically connected "Incident"/);
+      assert.match(text, /connected context: Incident/i);
+      assert.match(text, /Routing is on \(auto\)/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("lets the session switch unprompted on a migrated file", async () => {
+    await create("Incident", "checkout-api 5xx from pgbouncer pool exhaustion");
+    const state = await readRoutingFile();
+    await writeRoutingFile({ ...state, schema: 1, mode: "ask" });
+
+    const session = bridge("upgraded-machine-unprompted");
+    try {
+      await session.send("initialize", { protocolVersion: "2025-11-25" });
+      // Nothing here matches, so nothing is connected for the model — which is
+      // the state the baked-in "ask" used to trap a session in.
+      const text = await ask(session, "what is the capital of France?");
+      assert.doesNotMatch(text, /Automatically connected/);
+      assert.match(text, /Routing is on \(auto\)/);
 
       // And the switch it was told to make actually goes through, unprompted,
-      // which is what the baked-in ask was refusing.
+      // which is what the baked-in ask was refusing. This is the end-to-end
+      // proof through switchPolicy that auto-connect's own path never walks.
       const used = await session.send("tools/call", {
         name: "use_context",
         arguments: { context: "Incident", reason: "checkout 5xx" }

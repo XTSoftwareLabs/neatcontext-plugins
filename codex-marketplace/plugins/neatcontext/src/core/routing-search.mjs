@@ -161,10 +161,18 @@ function addPosting(postings, token, id, field) {
 // Ranked candidates, best first, each with the query terms that put it there.
 // Those terms are the "why it matched" the session's model gets to read, and
 // they are the reason a caller can explain a route instead of asserting one.
+//
+// `matchedFields` says *where* each of those terms landed, which is the same
+// distinction `FIELD_WEIGHTS` already makes and for the same reason: a hit in
+// an alias the user wrote is evidence, and a hit in a filename picked up from a
+// folder listing is a coincidence. Scoring weighs them apart; a caller deciding
+// whether a match is strong enough to act on unasked needs to as well, and it
+// cannot recover the field from the term alone.
 export function rank(index, query, { limit = 5 } = {}) {
   const terms = [...new Set(tokenize(query))];
   const scores = new Map();
   const matches = new Map();
+  const landed = new Map();
 
   for (const term of terms) {
     const byDocument = index.postings.get(term);
@@ -183,11 +191,19 @@ export function rank(index, query, { limit = 5 } = {}) {
       }
       scores.set(id, (scores.get(id) ?? 0) + (idf * weighted) / (K1 + weighted));
       matches.set(id, [...(matches.get(id) ?? []), term]);
+      const byTerm = landed.get(id) ?? new Map();
+      byTerm.set(term, [...byField.keys()]);
+      landed.set(id, byTerm);
     }
   }
 
   return [...scores]
-    .map(([id, score]) => ({ id, score, matched: matches.get(id) }))
+    .map(([id, score]) => ({
+      id,
+      score,
+      matched: matches.get(id),
+      matchedFields: Object.fromEntries(landed.get(id))
+    }))
     .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
     .slice(0, limit);
 }

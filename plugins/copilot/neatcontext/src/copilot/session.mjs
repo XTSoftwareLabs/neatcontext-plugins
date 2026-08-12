@@ -53,4 +53,20 @@ export function copilotSessionId() {
   );
 }
 
+// Whether this session has an identity of its own, rather than one it shares
+// with every window open on the same folder.
+//
+// The workspace digest is a good enough fallback for remembering a choice
+// someone made — a `use_context` call is announced, so the other window's user
+// sees what happened and why. It is not good enough for a choice the plugin
+// makes silently: routing acted on in one window would re-ground a conversation
+// running in the next, mid-subject and unannounced. So anything that connects
+// without being asked has to check this first.
+export function hasHostSessionId() {
+  return (
+    explicitId(process.env.NEATCONTEXT_SESSION_ID) !== null ||
+    hostSessionId(process.env.COPILOT_AGENT_SESSION_ID) !== null
+  );
+}
+
 configureSessionId(copilotSessionId);
