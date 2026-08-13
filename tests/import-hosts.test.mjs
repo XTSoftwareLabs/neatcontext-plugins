@@ -44,6 +44,11 @@ const HOSTS = [
   }
 ];
 
+// Host connect commands carry regex metacharacters — Codex spells its prefix
+// `$neatcontext:`. Escaped in full rather than per-character, so adding a host
+// whose prefix uses some other symbol cannot quietly turn this into a pattern.
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function run(file, args, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [file, ...args], {
@@ -113,7 +118,7 @@ describe("every host resolves an import rather than always creating", () => {
       assert.match(first, /Imported the "Shared Incident" conversation context/);
       assert.match(
         first,
-        new RegExp(`Connect it with:\\s+${host.useCommand.replace("$", "\\$")} Shared Incident`)
+        new RegExp(`Connect it with:\\s+${literal(host.useCommand)} Shared Incident`)
       );
 
       const second = await call("import", "--from", bundle);
