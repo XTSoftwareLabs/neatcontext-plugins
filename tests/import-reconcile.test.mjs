@@ -254,6 +254,62 @@ describe("importing a bundle this machine already has", () => {
     assert.match(await cli("import", "--from", bundle), /Import action: current/);
   });
 
+  it("rejects a merged capture it cannot trust, without touching the context", async () => {
+    const bundle = await sharedBundle();
+    const directory = localBundle(await cli("import", "--from", bundle));
+    await localWork("Team Checkout", "# Session summary\n\nLocal work happened here.");
+    await upstreamUpdate(bundle, { profileNote: "Upstream: provider raised the limit." });
+    const resolved = await cli("import", "--from", bundle);
+    const before = await manifestAt(directory);
+
+    const draft = async (contents) => {
+      const file = path.join(home, `bad-merge-${serial++}.json`);
+      await writeFile(file, contents);
+      return cli("import", "--from", bundle, "--merged-from", file, "--yes", "--consume");
+    };
+
+    assert.match(
+      await cli("import", "--from", bundle, "--merged-from", path.join(home, "not-written.json")),
+      /Could not read a valid merged capture JSON file/
+    );
+    assert.match(await draft("{not json"), /Could not read a valid merged capture JSON file/);
+    assert.match(
+      await draft(JSON.stringify({ schema: 9, name: "Team Checkout" })),
+      /Unsupported merged capture schema\. Expected schema 1\./
+    );
+    // A merge without a target is a create wearing the wrong hat: it would make
+    // the duplicate the whole command exists to avoid.
+    assert.match(
+      await draft(JSON.stringify({ schema: 1, name: "Team Checkout" })),
+      /must carry the exact targetId and baseHash this import printed/
+    );
+
+    // A capture that reproduces what is already stored changes nothing, and is
+    // reported rather than written as a no-op revision.
+    const unchanged = await draft(
+      JSON.stringify({
+        schema: 1,
+        name: field(resolved, "Context name"),
+        targetId: field(resolved, "Context id"),
+        baseHash: field(resolved, "Base hash"),
+        profile: await readFile(path.join(directory, "profile.md"), "utf8"),
+        routingDescription: before.routingDescription,
+        knowledge: [
+          {
+            path: "session-summary.md",
+            content: await readFile(
+              path.join(directory, "knowledge", "session-summary.md"),
+              "utf8"
+            )
+          }
+        ]
+      })
+    );
+    assert.match(unchanged, /The merge does not change the "Team Checkout" context\./);
+
+    assert.deepEqual(await manifestAt(directory), before, "no rejected draft may write");
+  });
+
   it("keeps matching after the other side renames, and keeps the local name", async () => {
     const bundle = await sharedBundle();
     const directory = localBundle(await cli("import", "--from", bundle));
