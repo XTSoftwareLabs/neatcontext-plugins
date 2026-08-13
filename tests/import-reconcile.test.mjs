@@ -220,6 +220,7 @@ describe("importing a bundle this machine already has", () => {
         name: field(resolved, "Context name"),
         targetId: field(resolved, "Context id"),
         baseHash: field(resolved, "Base hash"),
+        bundleHash: field(resolved, "Bundle hash"),
         profile: capture().profile + "\n\nBoth: retries capped and the limit was raised.",
         routingDescription: "Checkout recovery, payment retries, PAY-* tickets",
         knowledge: [
@@ -284,26 +285,73 @@ describe("importing a bundle this machine already has", () => {
       /must carry the exact targetId and baseHash this import printed/
     );
 
+    const merged = (overrides = {}) => ({
+      schema: 1,
+      name: field(resolved, "Context name"),
+      targetId: field(resolved, "Context id"),
+      baseHash: field(resolved, "Base hash"),
+      bundleHash: field(resolved, "Bundle hash"),
+      profile: capture().profile + "\n\nReconciled.",
+      routingDescription: before.routingDescription,
+      knowledge: [{ path: "session-summary.md", content: "# Session summary\n\nBoth sides.\n" }],
+      ...overrides
+    });
+
+    // Which bundle version was merged is not recoverable from the draft itself,
+    // so a draft that does not say cannot be trusted to have merged this one.
+    assert.match(
+      await draft(JSON.stringify(merged({ bundleHash: undefined }))),
+      /must carry the exact bundleHash this import printed/
+    );
+
+    // Upstream moving between drafting and applying is the case that silently
+    // loses their late work: the draft never saw it, and stamping the newer
+    // fingerprint would mark it as taken.
+    assert.match(
+      await draft(JSON.stringify(merged({ bundleHash: "0".repeat(64) }))),
+      /bundle changed while this merge was being prepared/
+    );
+
+    // A capture is only proof that it was built against some local context.
+    // Being addressed to one this bundle has no claim on is the case that would
+    // overwrite an unrelated context and stamp this lineage over its own.
+    await save(
+      capture({
+        name: "Unrelated Context",
+        profile: "# Unrelated Context\n\n## Purpose\nSomething else entirely."
+      })
+    );
+    const other = await cli("save-target", "Unrelated Context");
+    assert.match(
+      await draft(
+        JSON.stringify(
+          merged({
+            name: "Unrelated Context",
+            targetId: field(other, "Context id"),
+            baseHash: field(other, "Base hash")
+          })
+        )
+      ),
+      /not recorded as the copy this bundle belongs to/
+    );
+
     // A capture that reproduces what is already stored changes nothing, and is
     // reported rather than written as a no-op revision.
     const unchanged = await draft(
-      JSON.stringify({
-        schema: 1,
-        name: field(resolved, "Context name"),
-        targetId: field(resolved, "Context id"),
-        baseHash: field(resolved, "Base hash"),
-        profile: await readFile(path.join(directory, "profile.md"), "utf8"),
-        routingDescription: before.routingDescription,
-        knowledge: [
-          {
-            path: "session-summary.md",
-            content: await readFile(
-              path.join(directory, "knowledge", "session-summary.md"),
-              "utf8"
-            )
-          }
-        ]
-      })
+      JSON.stringify(
+        merged({
+          profile: await readFile(path.join(directory, "profile.md"), "utf8"),
+          knowledge: [
+            {
+              path: "session-summary.md",
+              content: await readFile(
+                path.join(directory, "knowledge", "session-summary.md"),
+                "utf8"
+              )
+            }
+          ]
+        })
+      )
     );
     assert.match(unchanged, /The merge does not change the "Team Checkout" context\./);
 
@@ -422,6 +470,88 @@ describe("importing a bundle a second time under a new name", () => {
   });
 });
 
+// Three ways a copy's identity or its local intent can be lost quietly. None of
+// them announce themselves: each looks like an ordinary import until something
+// the user set is gone, or the wrong context is the one that moved.
+describe("what import must not overwrite or forget", () => {
+  it("will not choose between two copies of one bundle", async () => {
+    const bundle = await sharedBundle();
+    await cli("import", "--from", bundle);
+    // Forking leaves two contexts carrying one lineage id. The fork sorts first,
+    // so picking by list order would silently target it instead of the original.
+    const forked = await cli("import", "--from", bundle, "--name", "AAA Fork");
+    assert.match(forked, /"Team Checkout" is already a copy of this bundle/);
+    // Forking again, now that it is already ambiguous, says so instead.
+    assert.match(
+      await cli("import", "--from", bundle, "--name", "ZZZ Fork"),
+      /2 contexts here were already copies of this bundle, and this makes 3/
+    );
+    await cli("delete", "ZZZ Fork", "--yes");
+    await upstreamUpdate(bundle, { profileNote: "Upstream: something new." });
+
+    const ambiguous = await cli("import", "--from", bundle);
+    assert.match(ambiguous, /Import action: choose/);
+    assert.match(ambiguous, /2 contexts here are copies of this bundle/);
+    assert.match(ambiguous, /AAA Fork/);
+    assert.match(ambiguous, /Team Checkout/);
+    assert.doesNotMatch(ambiguous, /Import action: replace/);
+
+    // Named, it resolves to exactly the one asked for.
+    assert.match(
+      await cli("import", "--from", bundle, "--into", "Team Checkout"),
+      /Import action: replace/
+    );
+  });
+
+  it("records an adoption even when there is nothing to import", async () => {
+    const bundle = await sharedBundle();
+    const directory = localBundle(await cli("import", "--from", bundle));
+    // Strip the lineage, leaving a copy that matches the bundle byte for byte
+    // but cannot prove where it came from — a context imported before lineage.
+    const manifest = await manifestAt(directory);
+    delete manifest.importedFrom;
+    await writeFile(
+      path.join(directory, "context.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
+    assert.match(await cli("import", "--from", bundle), /Import action: choose/);
+
+    const adopted = await cli("import", "--from", bundle, "--into", "Team Checkout");
+    assert.match(adopted, /Import action: current/);
+    assert.match(adopted, /Recorded that "Team Checkout" is this bundle's copy/);
+    assert.equal((await manifestAt(directory)).importedFrom.id, (await manifestAt(bundle)).id);
+
+    // The assertion was needed once. A later bundle is recognised on its own,
+    // and — since adoption claimed identity but never claimed to have taken the
+    // contents — it reconciles rather than overwriting.
+    await upstreamUpdate(bundle, { profileNote: "Upstream: later work." });
+    const next = await cli("import", "--from", bundle);
+    assert.match(next, /Import action: merge/);
+    assert.doesNotMatch(next, /Import action: choose/);
+  });
+
+  it("keeps a routing description written here when taking a newer copy", async () => {
+    const bundle = await sharedBundle();
+    const directory = localBundle(await cli("import", "--from", bundle));
+    const mine = "Only the checkout retry work, not the payment provider migration";
+    await cli("describe", "Team Checkout", "--use-when", mine);
+    await upstreamUpdate(bundle, { profileNote: "Upstream: retries are capped." });
+
+    // `describe` writes to the routing card and never to the manifest, so this
+    // is deliberately still a fast-forward rather than a merge.
+    const applied = await cli("import", "--from", bundle, "--yes");
+    assert.match(applied, /Updated the "Team Checkout" context from the bundle/);
+    assert.match(applied, new RegExp(`Kept the routing description you set here: ${mine}`));
+
+    const routing = JSON.parse(await readFile(path.join(home, "plugin-routing.json"), "utf8"));
+    assert.equal(
+      routing.cards[(await manifestAt(directory)).id].useWhen,
+      mine,
+      "the line the user wrote must outlive the bundle's"
+    );
+  });
+});
+
 // Two paths the command line cannot stage: a target deleted between resolving
 // an import and applying it, and a lineage stamp that fails after the import
 // has already landed. Both are reached directly, because what they protect is
@@ -442,6 +572,21 @@ describe("what import does when the ground moves under it", () => {
       (error) =>
         error instanceof ContextError &&
         /no longer exists/.test(error.message)
+    );
+  });
+
+  it("refuses to apply a merge whose target has since been deleted", async () => {
+    const { applyImportMerge, ContextError } = await import(
+      "../plugins/claude-code/neatcontext/src/core/context-store.mjs"
+    );
+    const bundle = await sharedBundle();
+    await assert.rejects(
+      () =>
+        applyImportMerge({
+          bundleFolder: bundle,
+          capture: { schema: 1, targetId: "context:deleted-while-merging", baseHash: "x" }
+        }),
+      (error) => error instanceof ContextError && /no longer exists/.test(error.message)
     );
   });
 

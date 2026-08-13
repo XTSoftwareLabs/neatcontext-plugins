@@ -24,13 +24,13 @@ A bundle this machine has not seen is imported immediately and the output says s
 - `current` — the context here already holds everything in the bundle. Relay that and stop.
 - `replace` — the local copy came from this bundle and has not been edited since, so the newer copy can be taken whole. Relay the preview, ask the user to confirm, and only then rerun the same command with `--yes`.
 - `merge` — both copies have changed. Reconcile them yourself, below.
-- `choose` — a context of the same name is here but nothing records a shared origin. Relay both options and stop until the user picks one: rerun with `--into "<name>"` to treat it as the same context, or with `--name "<new-name>"` to keep both as separate contexts.
+- `choose` — the target is not decidable. Either a context of the same name is here but nothing records a shared origin, or several contexts are copies of this bundle because one was forked. Relay the options and stop until the user picks: rerun with `--into "<name>"` to name the context they mean, or with `--name "<new-name>"` to keep a separate copy.
 
 Never answer `choose` on the user's behalf. Two people naming a context the same thing is not evidence that it is the same context, and the two answers are not recoverable from each other.
 
 ## Merging
 
-Use the exact `Context name`, `Context id`, `Base hash`, `Profile path`, `Knowledge folder`, `Bundle profile`, and `Bundle knowledge` values the command printed. Read the local profile and every file in the local knowledge folder, then read the bundle's profile and every file in its knowledge folder.
+Use the exact `Context name`, `Context id`, `Base hash`, `Bundle hash`, `Profile path`, `Knowledge folder`, `Bundle profile`, and `Bundle knowledge` values the command printed. The three hashes are what prove the merge is for this context, was built on its current contents, and consumed this version of the bundle; a merge that gets any of them wrong is refused rather than applied. Read the local profile and every file in the local knowledge folder, then read the bundle's profile and every file in its knowledge folder.
 
 Merge them the way a save merges a conversation into an existing context:
 
@@ -40,7 +40,7 @@ Merge them the way a save merges a conversation into an existing context:
 - Preserve the profile and routing description verbatim when neither side changed the behavioral contract or the matching scope.
 - The `knowledge` array must be the complete post-merge contents of the local knowledge folder.
 
-Create a unique scratch file named `.neatcontext-capture-import-<unique>.json` in the current workspace. Use schema `1`, and include the exact `targetId` and `baseHash` the command printed:
+Create a unique scratch file named `.neatcontext-capture-import-<unique>.json` in the current workspace. Use schema `1`, and include the exact `targetId`, `baseHash`, and `bundleHash` the command printed:
 
 ```json
 {
@@ -48,6 +48,7 @@ Create a unique scratch file named `.neatcontext-capture-import-<unique>.json` i
   "name": "Exact existing context name",
   "targetId": "context:exact-id",
   "baseHash": "exact base hash",
+  "bundleHash": "exact bundle hash",
   "profile": "# Exact existing context name\n\n## Purpose\n...",
   "routingDescription": "One line describing only the matching scope",
   "knowledge": [{ "path": "session-summary.md", "content": "# Session summary\n\n..." }]

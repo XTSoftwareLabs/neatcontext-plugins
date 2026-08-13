@@ -972,23 +972,30 @@ function fingerprintImportBundle(bundle) {
 // Exported so the give-up path is directly testable. It matters more than it
 // looks: by the time this runs the import has already landed, so a failure here
 // must cost the bookkeeping and never the context that was just written.
-export async function recordImportLineage(record, bundle) {
+export async function recordImportLineage(record, bundle, { identityOnly = false } = {}) {
   const { manifest } = bundle;
   if (typeof manifest?.id !== "string" || manifest.id.length === 0) {
     return record;
   }
-  const lineage = {
-    id: manifest.id,
-    revision:
-      Number.isInteger(manifest.revision) && manifest.revision > 0 ? manifest.revision : 1,
-    updatedAt: typeof manifest.updatedAt === "string" ? manifest.updatedAt : null,
-    fingerprint: await fingerprintContext(record),
-    // The other half of the baseline, and the one a merge depends on. A merged
-    // context deliberately matches neither side, so "did this copy change?"
-    // cannot decide whether there is anything left to take — only "did theirs?"
-    // can, and this is what answers it.
-    bundleFingerprint: fingerprintImportBundle(bundle)
-  };
+  // Adoption records who this copy is and nothing about what it holds. The
+  // baselines say "this content came from that bundle", which is a claim only a
+  // completed take can make: writing them here would tell the next import the
+  // material had already been merged, and it would answer `current` over a copy
+  // that never received a byte of it.
+  const lineage = identityOnly
+    ? { id: manifest.id, revision: null, updatedAt: null, fingerprint: null, bundleFingerprint: null }
+    : {
+        id: manifest.id,
+        revision:
+          Number.isInteger(manifest.revision) && manifest.revision > 0 ? manifest.revision : 1,
+        updatedAt: typeof manifest.updatedAt === "string" ? manifest.updatedAt : null,
+        fingerprint: await fingerprintContext(record),
+        // The other half of the baseline, and the one a merge depends on. A
+        // merged context deliberately matches neither side, so "did this copy
+        // change?" cannot decide whether there is anything left to take — only
+        // "did theirs?" can, and this is what answers it.
+        bundleFingerprint: fingerprintImportBundle(bundle)
+      };
   const manifestPath = path.join(record.directory, "context.json");
   const temporaryPath = path.join(
     record.directory,
@@ -1060,19 +1067,36 @@ export async function resolveImportTarget({ bundleFolder, into }) {
     throw new ContextError(`No context here is named "${adopt}".`);
   }
 
-  const lineage =
-    adopted ??
-    (bundleId
-      ? contexts.find(
-          (context) => context.id === bundleId || context.importedFrom?.id === bundleId
-        )
-      : null);
+  const bundleHash = fingerprintImportBundle(bundle);
+  const lineageMatches = bundleId
+    ? contexts.filter(
+        (context) => context.id === bundleId || context.importedFrom?.id === bundleId
+      )
+    : [];
+
+  // Forking with `--name` leaves two local contexts carrying one lineage id, so
+  // "the copy from this bundle" stops naming a single thing. Choosing one would
+  // be choosing by list order — alphabetical, since `listContexts` sorts by
+  // name — and quietly updating the fork instead of the original. Ask instead.
+  if (!adopted && lineageMatches.length > 1) {
+    return {
+      action: "choose",
+      bundle,
+      bundleHash,
+      localName,
+      record: null,
+      candidates: lineageMatches,
+      matchedBy: "ambiguous"
+    };
+  }
+
+  const lineage = adopted ?? lineageMatches[0] ?? null;
   const named = contexts.find(
     (context) => context.name.toLowerCase() === localName.toLowerCase()
   );
   const record = lineage ?? named ?? null;
   if (!record) {
-    return { action: "create", bundle, localName, record: null, matchedBy: null };
+    return { action: "create", bundle, bundleHash, localName, record: null, matchedBy: null };
   }
 
   const baseHash = await fingerprintContext(record);
@@ -1081,7 +1105,7 @@ export async function resolveImportTarget({ bundleFolder, into }) {
     baseHash
   });
   const matchedBy = adopted ? "adopted" : lineage ? "lineage" : "name";
-  const base = { bundle, localName, record, matchedBy, baseHash, preview };
+  const base = { bundle, bundleHash, localName, record, matchedBy, baseHash, preview };
 
   if (!lineage) {
     return { ...base, action: "choose" };
@@ -1095,7 +1119,7 @@ export async function resolveImportTarget({ bundleFolder, into }) {
   // whatever the two copies now look like.
   const stillCurrent =
     (typeof record.importedFrom?.bundleFingerprint === "string" &&
-      record.importedFrom.bundleFingerprint === fingerprintImportBundle(bundle)) ||
+      record.importedFrom.bundleFingerprint === bundleHash) ||
     !preview.changed;
   if (stillCurrent) {
     return { ...base, action: "current" };
@@ -1137,8 +1161,42 @@ export async function replaceContextFromBundle({ bundleFolder, targetId, baseHas
 // The lineage is re-stamped from the bundle in the same breath: a merge that
 // did not record which version it consumed would be re-offered, against the
 // same stale baseline, on every later import.
+//
+// Two things are checked that `updateCapturedContext` cannot check for itself,
+// because it knows about a target and knows nothing about a bundle.
+//
+// The target has to be this bundle's copy. A capture proves only that it was
+// built against *some* local context at a known base hash, so without this an
+// unrelated context could be updated here and then have this bundle's lineage
+// stamped over its own.
+//
+// And the bundle has to be the one that was merged. Nothing stops upstream
+// changing between drafting and applying, and stamping the newer fingerprint
+// over an older draft is the worst outcome available: the late material is
+// absent, and the next import says `current` and never offers it again.
 export async function applyImportMerge({ bundleFolder, capture }) {
   const bundle = await readImportBundle(bundleFolder);
+  const bundleId = typeof bundle.manifest.id === "string" ? bundle.manifest.id : null;
+  const record = await readContext(
+    typeof capture?.targetId === "string" ? capture.targetId : ""
+  );
+  if (!record) {
+    throw new ContextError("The context this merge was prepared for no longer exists.");
+  }
+  if (!bundleId || record.importedFrom?.id !== bundleId) {
+    throw new ContextError(
+      `This merge is addressed to "${record.name}", which is not recorded as the copy ` +
+        "this bundle belongs to. Resolve the import again and rebuild the merge from what " +
+        "it prints."
+    );
+  }
+  if (capture.bundleHash !== fingerprintImportBundle(bundle)) {
+    throw new ContextError(
+      "The bundle changed while this merge was being prepared, so applying it would drop " +
+        "whatever arrived late. Resolve the import again and rebuild the merge from the " +
+        "current bundle."
+    );
+  }
   const result = await updateCapturedContext({ ...capture, updatedFrom: "import" });
   return { ...result, record: await recordImportLineage(result.record, bundle) };
 }

@@ -23,14 +23,33 @@ import {
   ContextError,
   importCapturedContext,
   previewCapturedContextUpdate,
+  recordImportLineage,
   replaceContextFromBundle,
   resolveImportTarget
 } from "./context-store.mjs";
-import { putCard } from "./routing.mjs";
+import { MAX_USE_WHEN, putCard, readRouting } from "./routing.mjs";
 
-function refreshCard(result) {
+const normalizeUseWhen = (text) =>
+  (text ?? "").trim().replace(/\s+/g, " ").slice(0, MAX_USE_WHEN);
+
+// A routing line the user wrote with `describe` lives only in the routing card,
+// never in the manifest — so the import baseline cannot see it, and taking a
+// bundle whole would put the bundle's line back without either side noticing it
+// had been overruled. It is not treated as divergence, because a routing tweak
+// is not knowledge and does not need a merge to resolve; it is simply kept.
+//
+// Locally authored means the card and the manifest disagree, which is exactly
+// what `describe` leaves behind and what an import or save never does.
+async function authoredUseWhen(record) {
+  const routing = await readRouting().catch(() => null);
+  const stored = routing?.cards?.[record.id]?.useWhen ?? "";
+  if (stored.length === 0) return null;
+  return stored === normalizeUseWhen(record.routingDescription) ? null : stored;
+}
+
+function refreshCard(result, authored = null) {
   return putCard(result.record.id, {
-    useWhen: result.routingDescription,
+    useWhen: authored ?? result.routingDescription,
     source: result.profileText
   }).catch(() => undefined);
 }
@@ -120,6 +139,13 @@ async function runMergedImport({ bundleFolder, mergedFrom, confirmed, consume })
     );
     return lines;
   }
+  if (typeof capture.bundleHash !== "string" || capture.bundleHash.length === 0) {
+    lines.push(
+      "A merged capture must carry the exact bundleHash this import printed — it is what " +
+        "records which version of the bundle was actually merged."
+    );
+    return lines;
+  }
 
   const preview = await previewCapturedContextUpdate(capture);
   if (!preview.changed) {
@@ -133,8 +159,9 @@ async function runMergedImport({ bundleFolder, mergedFrom, confirmed, consume })
     return lines;
   }
 
+  const authored = await authoredUseWhen(preview.record);
   const result = await applyImportMerge({ bundleFolder, capture });
-  await refreshCard(result);
+  await refreshCard(result, authored);
   // Only once it has landed, and only when asked. A preview must leave the
   // draft where it is, and so must any failure, or a merge the model spent the
   // conversation building would have to be rebuilt from nothing.
@@ -190,6 +217,12 @@ export async function runImport({
             "separate contexts holding the same material, and both will be considered " +
             "whenever a session routes itself."
         );
+      } else if (resolved.matchedBy === "ambiguous") {
+        lines.push(
+          `Note: ${resolved.candidates.length} contexts here were already copies of this ` +
+            `bundle, and this makes ${resolved.candidates.length + 1}. A later import cannot ` +
+            'tell which one you mean and will ask, so name it with --into "<name>".'
+        );
       }
       describeImported(lines, created, source, useCommand);
       return lines.join("\n");
@@ -205,6 +238,17 @@ export async function runImport({
     if (resolved.action === "current") {
       lines.push("Import action: current");
       lines.push(`"${record.name}" already holds everything in this bundle. Nothing to import.`);
+      // Adoption is an answer about identity, and it has to survive even when
+      // there is no content to move. Left unrecorded, the next bundle from this
+      // origin would ask the same question again — and no answer to it could
+      // ever fast-forward, because no baseline was ever written down.
+      if (resolved.matchedBy === "adopted") {
+        await recordImportLineage(record, bundle, { identityOnly: true });
+        lines.push(
+          `Recorded that "${record.name}" is this bundle's copy, so a later one is ` +
+            "recognised without being told again."
+        );
+      }
       return lines.join("\n");
     }
 
@@ -213,6 +257,22 @@ export async function runImport({
     // adopts the local context as this bundle's copy; since no baseline against
     // this bundle exists for it, adopting leads to a merge and never to a
     // replacement.
+    // Several local contexts already carry this bundle's lineage, which is what
+    // forking leaves behind. Any of them could be the one meant, and picking is
+    // the user's call rather than the list order's.
+    if (resolved.action === "choose" && resolved.matchedBy === "ambiguous") {
+      lines.push("Import action: choose");
+      lines.push(
+        `${resolved.candidates.length} contexts here are copies of this bundle, so there ` +
+          "is no single one to update:"
+      );
+      for (const candidate of resolved.candidates) {
+        lines.push(`  ${candidate.name}`);
+      }
+      lines.push('Name the one you mean with --into "<name>".');
+      return lines.join("\n");
+    }
+
     if (resolved.action === "choose") {
       lines.push("Import action: choose");
       lines.push(
@@ -242,14 +302,25 @@ export async function runImport({
               "to be reconciled first."
       );
       describeDistance(lines, record, bundle);
+      // Adoption is recorded now rather than at apply time, so the merge that
+      // follows can be checked against a target this bundle is known to belong
+      // to. Identity only: nothing has been taken from the bundle yet.
+      if (resolved.matchedBy === "adopted") {
+        await recordImportLineage(record, bundle, { identityOnly: true });
+      }
       lines.push(`Context name: ${record.name}`);
       lines.push(`Context id: ${record.id}`);
       lines.push(`Base hash: ${resolved.baseHash}`);
+      lines.push(`Bundle hash: ${resolved.bundleHash}`);
       lines.push(`Profile path: ${record.profilePath}`);
       lines.push(`Knowledge folder: ${record.knowledgeFolder}`);
       lines.push(`Bundle profile: ${path.join(source, "profile.md")}`);
       lines.push(`Bundle knowledge: ${path.join(source, "knowledge")}`);
-      lines.push("Merge both sides, then apply the result with --merged-from.");
+      lines.push(
+        "Merge both sides, then apply the result with --merged-from. Carry the context " +
+          "id, base hash, and bundle hash into the draft exactly as printed: they are what " +
+          "prove the merge is for this context and was built from this bundle."
+      );
       return lines.join("\n");
     }
 
@@ -265,12 +336,16 @@ export async function runImport({
       return lines.join("\n");
     }
 
+    const authored = await authoredUseWhen(record);
     const result = await replaceContextFromBundle({
       bundleFolder,
       targetId: record.id,
       baseHash: resolved.baseHash
     });
-    await refreshCard(result);
+    await refreshCard(result, authored);
+    if (authored) {
+      lines.push(`Kept the routing description you set here: ${authored}`);
+    }
     describeUpdated(
       lines,
       result,
