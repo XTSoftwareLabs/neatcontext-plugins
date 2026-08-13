@@ -41,7 +41,7 @@ import {
 import { assess, createRoutingIndex } from "../core/routing-candidates.mjs";
 import { applySelection, resolveContext } from "../core/selection.mjs";
 
-const SERVER_INFO = { name: "neatcontext", version: "0.3.4" };
+const SERVER_INFO = { name: "neatcontext", version: "0.3.5" };
 const GET_CONTEXT_TOOL = {
   name: "get_context",
   title: "Get Context",

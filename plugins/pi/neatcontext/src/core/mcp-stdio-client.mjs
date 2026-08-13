@@ -32,7 +32,7 @@ export function createStdioMcpClient({
   cwd = null,
   env = {},
   timeoutMs = DEFAULT_TIMEOUT_MS,
-  clientInfo = { name: "neatcontext", version: "0.3.4" },
+  clientInfo = { name: "neatcontext", version: "0.3.5" },
   // Injectable so the tests can produce the failures a real child process
   // only produces by accident: a pipe that is already gone when we write to it.
   spawnProcess = spawn
