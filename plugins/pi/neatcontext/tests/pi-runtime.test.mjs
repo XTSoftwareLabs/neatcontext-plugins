@@ -341,6 +341,32 @@ describe("save", () => {
     assert.equal("kind" in manifest, false);
   });
 
+  it("imports a bundle, then resolves the same one instead of duplicating it", async () => {
+    await runtime.saveContext({
+      name: "Queue lag",
+      profile: "# Queue lag\n\n## Purpose\n\nPartition skew.\n",
+      routingDescription: "order-events partition lag",
+      knowledge
+    });
+    const exported = await runtime.exportContext({
+      context: "Queue lag",
+      destination: path.join(home, "share")
+    });
+    const bundle = /Bundle folder:\s+(.+)/.exec(exported)[1];
+    await runtime.deleteContext("Queue lag", { confirm: true });
+
+    const imported = await runtime.importContext({ from: bundle });
+    assert.match(imported, /Imported the "Queue lag" conversation context/);
+    assert.match(imported, /Connect it with: {2}\/neatcontext-use Queue lag/);
+
+    // The second import is the one this exists for: same bundle, no duplicate.
+    assert.match(await runtime.importContext({ from: bundle }), /Import action: current/);
+  });
+
+  it("asks for the bundle folder when none was given", async () => {
+    assert.match(await runtime.importContext({}), /Pass the shared bundle folder/);
+  });
+
   it("refuses to export a Context whose knowledge is externally owned", async () => {
     await createOrders();
     const exported = await runtime.exportContext({

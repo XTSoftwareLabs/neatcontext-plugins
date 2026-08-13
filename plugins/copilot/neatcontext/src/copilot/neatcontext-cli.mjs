@@ -8,7 +8,7 @@
 //   create --name --knowledge  create a context (--profile-from <file>)
 //   save-target [name]          decide whether save creates or updates
 //   save --from <capture.json>  create or update from this conversation
-//   import --from <bundle>      import a portable conversation context
+//   import --from <bundle>      import a bundle, or reconcile one already here
 //   export --to <folder>        copy a saved context's bundle out for sharing
 //   delete <query> [--yes]     delete a context
 //   mode [auto|ask|manual]     how the session may route itself between contexts
@@ -32,7 +32,6 @@ import {
   deleteContext,
   exportContext,
   fingerprintContext,
-  importCapturedContext,
   listContexts,
   ContextError,
   listKnowledgeFiles,
@@ -40,6 +39,7 @@ import {
   readProfileText,
   updateCapturedContext
 } from "../core/context-store.mjs";
+import { runImport } from "../core/import-commands.mjs";
 import {
   addAlias,
   isCardStale,
@@ -704,30 +704,17 @@ async function commandSave(flags) {
 }
 
 async function commandImport(flags) {
-  const source = typeof flags.from === "string" ? flags.from : "";
-  const name = typeof flags.name === "string" ? flags.name : "";
-  try {
-    const result = await importCapturedContext({ bundleFolder: source, name });
-    await putCard(result.record.id, {
-      useWhen: result.routingDescription,
-      source: result.profileText
-    }).catch(() => undefined);
-    print(`Imported the "${result.record.name}" conversation context.`);
-    print(`  Domain profile:   ${result.record.profilePath}`);
-    print(
-      `  Knowledge folder: ${result.record.knowledgeFolder} ` +
-        `(${result.knowledgeFileCount} files)`
-    );
-    print(`  Local bundle:     ${result.record.directory}`);
-    print(`  Connect it with:  /neatcontext:use ${result.record.name}`);
-    print(`The shared source folder (${source}) was left untouched.`);
-  } catch (error) {
-    if (error instanceof ContextError) {
-      print(error.message);
-      return;
-    }
-    throw error;
-  }
+  print(
+    await runImport({
+      bundleFolder: typeof flags.from === "string" ? flags.from : "",
+      name: typeof flags.name === "string" ? flags.name : "",
+      into: typeof flags.into === "string" ? flags.into : "",
+      mergedFrom: typeof flags["merged-from"] === "string" ? flags["merged-from"] : "",
+      confirmed: flags.yes === true || flags.yes === "true",
+      consume: flags.consume === true || flags.consume === "true",
+      useCommand: "/neatcontext:use"
+    })
+  );
 }
 
 // The routing description is read from the card rather than the manifest:

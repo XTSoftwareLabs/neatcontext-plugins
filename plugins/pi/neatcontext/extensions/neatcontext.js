@@ -124,6 +124,42 @@ function parseExportArguments(input) {
   return { context: name.join(" "), destination, force };
 }
 
+// Import takes the bundle folder bare and everything else behind a flag, so the
+// common case stays one path and the reconciling cases stay explicit.
+function parseImportArguments(input) {
+  const words = splitCommandArguments(input);
+  const folder = [];
+  const values = { name: "", into: "", "merged-from": "" };
+  let yes = false;
+  let consume = false;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const valued = Object.keys(values).find(
+      (flag) => word === `--${flag}` || word.startsWith(`--${flag}=`)
+    );
+    if (word === "--yes") {
+      yes = true;
+    } else if (word === "--consume") {
+      consume = true;
+    } else if (valued && word === `--${valued}`) {
+      values[valued] = words[index + 1] ?? "";
+      index += 1;
+    } else if (valued) {
+      values[valued] = word.slice(valued.length + 3);
+    } else {
+      folder.push(word);
+    }
+  }
+  return {
+    from: folder.join(" "),
+    name: values.name,
+    into: values.into,
+    mergedFrom: values["merged-from"],
+    yes,
+    consume
+  };
+}
+
 export default function (pi) {
   // --- grounding ------------------------------------------------------------
 
@@ -526,14 +562,15 @@ export default function (pi) {
   });
 
   pi.registerCommand("neatcontext-import", {
-    description: "Import a shared conversation context bundle",
+    description: "Import a shared conversation context bundle, or reconcile a newer copy",
     handler: async (args, ctx) => {
       bindFrom(ctx);
-      let from = args.trim();
-      if (from.length === 0 && ctx.hasUI) {
-        from = (await ctx.ui.input("Bundle folder to import", "path to the shared folder")) ?? "";
+      const options = parseImportArguments(args.trim());
+      if (options.from.length === 0 && ctx.hasUI) {
+        options.from =
+          (await ctx.ui.input("Bundle folder to import", "path to the shared folder")) ?? "";
       }
-      report(pi, await importContext({ from }));
+      report(pi, await importContext(options));
     }
   });
 

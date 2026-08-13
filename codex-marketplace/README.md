@@ -157,10 +157,30 @@ knowledge inside the context bundle.
 
 ### `$neatcontext:import [folder]`
 
-Import a context bundle shared by someone else. Importing creates your own
-local copy and leaves the shared folder unchanged.
+Import a context bundle shared by someone else. The shared folder is only ever
+read: importing makes your own local copy and never writes back to it.
+
+A bundle you already imported can be imported again — that is how you pick up a
+teammate's newer work. Import recognises the copy it gave you and says what
+taking the update would cost, rather than building a second context beside it:
+
+- Nothing new in the bundle, and it says so.
+- Your copy untouched since it arrived, so the newer one replaces it whole once
+  you confirm. It stays the same context, so a session connected to it picks the
+  material up immediately.
+- Both copies changed, so the two are reconciled into one and previewed before
+  anything is written. Your work is never dropped in favour of theirs.
+- A name already taken by a context with no shared origin, which import will not
+  guess about: it asks whether the two are the same context or a collision, and
+  waits.
+
+A context is never deleted to make room for an imported one.
 
 After importing, connect it with `$neatcontext:use <name>`.
+
+A merge lives only on your machine until you share it back with
+`$neatcontext:export`. Left unshared, the same divergence has to be
+reconciled again every time you import.
 
 ### `$neatcontext:export [name] [folder]`
 

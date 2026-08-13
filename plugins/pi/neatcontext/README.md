@@ -37,7 +37,7 @@ pi install npm:@xtsoftwarelabs/neatcontext-pi
 | `/neatcontext-mode [auto\|ask\|manual]` | How this session may re-ground itself (`--global` for the default) |
 | `/neatcontext-create` | Create a context around a knowledge folder you already have |
 | `/neatcontext-save [name]` | Save this conversation's durable work as a context |
-| `/neatcontext-import <folder>` | Import a shared conversation-context bundle |
+| `/neatcontext-import <folder>` | Import a shared bundle, or reconcile a newer copy of one you already have |
 | `/neatcontext-export [name] --to <folder>` | Export a saved context as a shareable bundle |
 | `/neatcontext-delete <name>` | Delete a context |
 

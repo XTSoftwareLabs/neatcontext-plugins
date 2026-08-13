@@ -38,7 +38,8 @@ copilot plugin install neatcontext@neatcontext
 - `/neatcontext:list` — list the contexts on this machine.
 - `/neatcontext:status` — show the selection and routing mode.
 - `/neatcontext:create` — create a context around an existing knowledge folder.
-- `/neatcontext:import [folder]` — import a shared context bundle.
+- `/neatcontext:import [folder]` — import a shared context bundle, or take a
+  teammate's newer copy of one you already have.
 - `/neatcontext:export [name] [folder]` — export a saved context as a shareable bundle.
 - `/neatcontext:delete [name or number]` — preview and delete a context.
 - `/neatcontext:mode [auto|ask|manual]` — show or change routing behavior.
