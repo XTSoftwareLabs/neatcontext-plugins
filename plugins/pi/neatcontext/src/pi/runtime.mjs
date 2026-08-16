@@ -71,7 +71,7 @@ import {
   resolveContext
 } from "../core/selection.mjs";
 
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.1.1";
 
 // What to say when a session has nothing to ground in. It is deliberately about
 // what to do in the current session.
