@@ -196,6 +196,52 @@ describe("commands", () => {
     assert.match(api.messages[0].content, /quoted export destination/);
   });
 
+  it("parses a quoted bundle folder and the reconciling flags for import", async () => {
+    const runtime = await import("../src/pi/runtime.mjs");
+    await runtime.saveContext({
+      name: "Plugin import",
+      profile: "# Plugin import\n\n## Purpose\n\nImport parsing.\n",
+      routingDescription: "pi import command parsing",
+      knowledge: [{ path: "session-summary.md", content: "# Summary\n\nImport this.\n" }]
+    });
+    const destination = path.join(home, "quoted import source");
+    const exported = await runtime.exportContext({ context: "Plugin import", destination });
+    const bundle = /Bundle folder:\s+(.+)/.exec(exported)[1];
+    await runtime.deleteContext("Plugin import", { confirm: true });
+
+    api.messages.length = 0;
+    await api.commands.get("neatcontext-import").handler(`"${bundle}"`, fakeCtx());
+    assert.match(api.messages[0].content, /Imported the "Plugin import" conversation context/);
+    assert.match(api.messages[0].content, /quoted import source/);
+
+    // A flag the bare-folder parse must not swallow, and a second import that
+    // has to resolve rather than duplicate.
+    api.messages.length = 0;
+    await api.commands.get("neatcontext-import").handler(`"${bundle}" --yes`, fakeCtx());
+    assert.match(api.messages[0].content, /Import action: current/);
+
+    api.messages.length = 0;
+    await api.commands
+      .get("neatcontext-import")
+      .handler(`"${bundle}" --name "Plugin import copy"`, fakeCtx());
+    assert.match(api.messages[0].content, /Imported the "Plugin import copy"/);
+    assert.match(api.messages[0].content, /already a copy of this bundle/);
+
+    // The `--flag=value` form, and a flag that carries no value of its own.
+    api.messages.length = 0;
+    await api.commands
+      .get("neatcontext-import")
+      .handler(`"${bundle}" --into=Nowhere --consume`, fakeCtx());
+    assert.match(api.messages[0].content, /No context here is named "Nowhere"/);
+  });
+
+  it("asks for the bundle folder when the command was given none", async () => {
+    const ctx = { ...fakeCtx(), hasUI: true, ui: { input: async () => "  " } };
+    api.messages.length = 0;
+    await api.commands.get("neatcontext-import").handler("", ctx);
+    assert.match(api.messages[0].content, /Pass the shared bundle folder/);
+  });
+
   it("routes --global to the mode command without treating it as a mode", async () => {
     api.messages.length = 0;
     await api.commands.get("neatcontext-mode").handler("auto --global", fakeCtx());

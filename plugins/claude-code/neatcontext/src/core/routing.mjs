@@ -44,7 +44,7 @@ export const DEFAULT_MODE = "auto";
 // 2 marks the file as one where a stored mode means somebody chose it. See
 // `chosenMode` for what schema 1 got wrong and why it cannot be read literally.
 const SCHEMA = 2;
-const MAX_USE_WHEN = 240;
+export const MAX_USE_WHEN = 240;
 const MAX_ALIASES = 12;
 const MAX_DECISIONS = 100;
 

@@ -68,6 +68,36 @@ function slugify(name) {
   return slug || "context";
 }
 
+// Where an imported copy came from, and what it looked like the moment it
+// landed here.
+//
+// `id` is the exporter's context id, and it is the lineage key: a later bundle
+// from the same origin is recognised by it, so renaming either copy cannot
+// break the link and two teams who picked the same name are never confused for
+// each other. The rest is the baseline the next import is judged against —
+// `revision` and `updatedAt` are theirs at the time, so a newer bundle can say
+// how far they have moved, and `fingerprint` is this copy's own, so anything
+// saved or hand-edited here since shows up as divergence.
+//
+// Read leniently, and absent is a meaningful answer: a copy imported before
+// this existed has no baseline, which is treated as divergence rather than as
+// a clean slate. That costs a merge review and never costs content.
+function readImportLineage(parsed) {
+  const lineage = parsed?.importedFrom;
+  if (!lineage || typeof lineage !== "object" || typeof lineage.id !== "string") {
+    return null;
+  }
+  return {
+    id: lineage.id,
+    revision:
+      Number.isInteger(lineage.revision) && lineage.revision > 0 ? lineage.revision : null,
+    updatedAt: typeof lineage.updatedAt === "string" ? lineage.updatedAt : null,
+    fingerprint: typeof lineage.fingerprint === "string" ? lineage.fingerprint : null,
+    bundleFingerprint:
+      typeof lineage.bundleFingerprint === "string" ? lineage.bundleFingerprint : null
+  };
+}
+
 function recordFor(directory, parsed) {
   const legacy = parsed?.schema === LEGACY_SCHEMA && parsed?.kind === "lite";
   // `kind` is a schema 1 concept and means nothing at CONTEXT_SCHEMA, so a
@@ -116,6 +146,7 @@ function recordFor(directory, parsed) {
     extensions: readExtensionDeclarations(parsed.extensions),
     capturedFrom: typeof parsed.capturedFrom === "string" ? parsed.capturedFrom : null,
     capturedFromConversation: isConversationCapture(parsed.capturedFrom),
+    importedFrom: readImportLineage(parsed),
     profilePath: path.join(directory, "profile.md"),
     createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : null,
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
@@ -818,10 +849,10 @@ export async function updateCapturedContext(capture) {
   }
 }
 
-// A captured context is already an export bundle. Import reads only the
-// portable, generated shape and creates a fresh local id, so a teammate can
-// keep the shared folder unchanged and can rename the local copy if necessary.
-export async function importCapturedContext({ bundleFolder, name }) {
+// One reader for both halves of import: working out what a bundle would do to
+// this machine, and then doing it. Those two must never disagree about what the
+// bundle contains, so neither gets a parser of its own.
+export async function readImportBundle(bundleFolder) {
   const supplied = (bundleFolder ?? "").trim();
   if (supplied.length === 0) {
     throw new ContextError("A captured context bundle folder is required.");
@@ -877,22 +908,328 @@ export async function importCapturedContext({ bundleFolder, name }) {
     });
   }
 
-  return createCapturedContext({
-    name: typeof name === "string" && name.trim().length > 0 ? name : manifest.name,
-    profile,
-    routingDescription: manifest.routingDescription,
+  return { source, manifest, profile, knowledge };
+}
+
+// The bundle's contents shaped as an update to a context already here. The
+// local name is used rather than the bundle's on purpose: a rename made on
+// either side is a local decision, and taking someone else's update must not
+// quietly undo it.
+function captureFromBundle(bundle, record) {
+  return {
+    targetId: record.id,
+    name: record.name,
+    profile: bundle.profile,
+    routingDescription: bundle.manifest.routingDescription,
     // The point of keeping these in the bundle: a teammate's copy is findable
     // by the same words as the original, without them rediscovering any of it.
+    routingQuestions: bundle.manifest.routingQuestions,
+    routingEntities: bundle.manifest.routingEntities,
+    knowledge: bundle.knowledge,
+    // What the bundle says it expects to reach, reduced to declarations. Import
+    // creates no binding for any of them, so what arrives can say what it wants
+    // and can run nothing until this machine's owner says otherwise.
+    extensions: readExtensionDeclarations(bundle.manifest.extensions)
+  };
+}
+
+// Whether a local context is this bundle's copy here.
+//
+// Two ways to be one: it was imported from that bundle and recorded the lineage,
+// or it *is* that context, exported and brought back. The second needs no
+// lineage of its own — the ids simply match — and leaving it out is how a merge
+// came to be offered and then refused on every attempt, because resolution
+// counted it and application did not. One predicate, used by both.
+function isBundleCopy(record, bundleId) {
+  return (
+    typeof bundleId === "string" &&
+    bundleId.length > 0 &&
+    (record.id === bundleId || record.importedFrom?.id === bundleId)
+  );
+}
+
+// What a bundle holds, independent of the machine it came from. Revision and
+// timestamps are left out deliberately: re-exporting the same material must not
+// look like a change, because "have they moved?" is a question about content.
+function fingerprintImportBundle(bundle) {
+  const { manifest } = bundle;
+  const hash = createHash("sha256");
+  hash.update(
+    JSON.stringify({
+      id: typeof manifest.id === "string" ? manifest.id : null,
+      name: manifest.name,
+      routingDescription: manifest.routingDescription ?? null,
+      routingQuestions: normalizeRoutingList(manifest.routingQuestions, MAX_ROUTING_QUESTIONS),
+      routingEntities: normalizeRoutingList(manifest.routingEntities, MAX_ROUTING_ENTITIES),
+      extensions: serializeExtensionDeclarations(readExtensionDeclarations(manifest.extensions))
+    })
+  );
+  hash.update("\0profile\0");
+  hash.update(bundle.profile);
+  for (const entry of bundle.knowledge) {
+    hash.update("\0knowledge\0");
+    hash.update(entry.path);
+    hash.update("\0");
+    hash.update(entry.content);
+  }
+  return hash.digest("hex");
+}
+
+// Stamps where a copy came from, as a second write once the bundle is in place.
+// The fingerprint has to be taken from the finished context, so it cannot be
+// part of the one atomic write that creates it. Losing the process between the
+// two leaves the lineage absent, which the next import reads as divergence and
+// answers with a merge — a review that costs time and never costs content.
+//
+// Only `importedFrom` is touched, and `fingerprintContext` does not hash it, so
+// the fingerprint written here still describes the context afterwards.
+//
+// Exported so the give-up path is directly testable. It matters more than it
+// looks: by the time this runs the import has already landed, so a failure here
+// must cost the bookkeeping and never the context that was just written.
+export async function recordImportLineage(record, bundle, { identityOnly = false } = {}) {
+  const { manifest } = bundle;
+  if (typeof manifest?.id !== "string" || manifest.id.length === 0) {
+    return record;
+  }
+  // Adoption records who this copy is and nothing about what it holds. The
+  // baselines say "this content came from that bundle", which is a claim only a
+  // completed take can make: writing them here would tell the next import the
+  // material had already been merged, and it would answer `current` over a copy
+  // that never received a byte of it.
+  const lineage = identityOnly
+    ? { id: manifest.id, revision: null, updatedAt: null, fingerprint: null, bundleFingerprint: null }
+    : {
+        id: manifest.id,
+        revision:
+          Number.isInteger(manifest.revision) && manifest.revision > 0 ? manifest.revision : 1,
+        updatedAt: typeof manifest.updatedAt === "string" ? manifest.updatedAt : null,
+        fingerprint: await fingerprintContext(record),
+        // The other half of the baseline, and the one a merge depends on. A
+        // merged context deliberately matches neither side, so "did this copy
+        // change?" cannot decide whether there is anything left to take — only
+        // "did theirs?" can, and this is what answers it.
+        bundleFingerprint: fingerprintImportBundle(bundle)
+      };
+  const manifestPath = path.join(record.directory, "context.json");
+  const temporaryPath = path.join(
+    record.directory,
+    `.context-lineage-${randomBytes(6).toString("hex")}.json`
+  );
+  try {
+    const stored = JSON.parse(await readFile(manifestPath, "utf8"));
+    const updated = { ...stored, importedFrom: lineage };
+    await writeFile(temporaryPath, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
+    await rename(temporaryPath, manifestPath);
+    return recordFor(record.directory, updated);
+  } catch {
+    return record;
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+// A captured context is already an export bundle. Import reads only the
+// portable, generated shape and creates a fresh local id, so a teammate can
+// keep the shared folder unchanged and can rename the local copy if necessary.
+export async function importCapturedContext({ bundleFolder, name }) {
+  const bundle = await readImportBundle(bundleFolder);
+  const { manifest } = bundle;
+  const created = await createCapturedContext({
+    name: typeof name === "string" && name.trim().length > 0 ? name : manifest.name,
+    profile: bundle.profile,
+    routingDescription: manifest.routingDescription,
     routingQuestions: manifest.routingQuestions,
     routingEntities: manifest.routingEntities,
-    knowledge,
-    // What the bundle says it expects to reach, reduced to declarations. The
-    // import creates no binding for any of them, so the imported context arrives
-    // able to say what it wants and unable to run anything until this machine's
-    // owner says otherwise.
+    knowledge: bundle.knowledge,
     extensions: readExtensionDeclarations(manifest.extensions),
     capturedFrom: manifest.capturedFrom
   });
+  return { ...created, record: await recordImportLineage(created.record, bundle) };
+}
+
+// What a second bundle from the same origin should do to the copy already here.
+//
+// Nothing is written. This answers the only question that matters before an
+// import can act — is this new, is it the same copy again, has it moved, and
+// has this machine moved too — and the answer decides between creating,
+// replacing in place, and asking the model to merge.
+//
+// Identity is never guessed from content. It comes from the lineage id, from
+// the bundle being this very context exported and brought back, or from the
+// user adopting a context with `into`. A bare name collision is reported as a
+// choice rather than resolved, because two people naming a context the same
+// thing is not evidence that it is the same context.
+export async function resolveImportTarget({ bundleFolder, into }) {
+  const bundle = await readImportBundle(bundleFolder);
+  const localName = normalizeName(bundle.manifest.name);
+  const contexts = await listContexts();
+  const bundleId = typeof bundle.manifest.id === "string" ? bundle.manifest.id : null;
+  const adopt = (into ?? "").trim();
+  const bundleHash = fingerprintImportBundle(bundle);
+
+  const selected =
+    adopt.length > 0
+      ? (contexts.find(
+          (context) =>
+            context.id === adopt || context.name.toLowerCase() === adopt.toLowerCase()
+        ) ?? null)
+      : null;
+  if (adopt.length > 0 && !selected) {
+    throw new ContextError(`No context here is named "${adopt}".`);
+  }
+
+  const named =
+    contexts.find((context) => context.name.toLowerCase() === localName.toLowerCase()) ?? null;
+
+  // A bundle carrying no id cannot be recognised again, so nothing here can
+  // truthfully be recorded as its copy: the lineage write has no key to store,
+  // and a merge drafted against it could never be proved to belong to it. Such
+  // a bundle can still arrive — it just arrives as its own context, and saying
+  // so beats offering a reconciliation that cannot be persisted or applied.
+  if (!bundleId && (selected || named)) {
+    return {
+      action: "unlinkable",
+      bundle,
+      bundleHash,
+      localName,
+      record: selected ?? named,
+      matchedBy: null
+    };
+  }
+
+  const lineageMatches = contexts.filter((context) => isBundleCopy(context, bundleId));
+
+  // Forking with `--name` leaves two local contexts carrying one lineage id, so
+  // "the copy from this bundle" stops naming a single thing. Choosing one would
+  // be choosing by list order — alphabetical, since `listContexts` sorts by
+  // name — and quietly updating the fork instead of the original. Ask instead.
+  if (!selected && lineageMatches.length > 1) {
+    return {
+      action: "choose",
+      bundle,
+      bundleHash,
+      localName,
+      record: null,
+      candidates: lineageMatches,
+      matchedBy: "ambiguous"
+    };
+  }
+
+  // `--into` does two different jobs, and only one of them is an adoption.
+  //
+  // Naming a context that already carries this lineage is picking between
+  // copies, which is what forking makes necessary. Treating that as a fresh
+  // assertion of identity would restamp it identity-only and throw away a
+  // baseline that was both valid and earned — turning the safe fast-forward it
+  // qualified for into a merge, on a copy nobody had touched.
+  const adopted = selected && !isBundleCopy(selected, bundleId) ? selected : null;
+  const lineage = selected ?? lineageMatches[0] ?? null;
+  const record = lineage ?? named ?? null;
+  if (!record) {
+    return { action: "create", bundle, bundleHash, localName, record: null, matchedBy: null };
+  }
+
+  const baseHash = await fingerprintContext(record);
+  const preview = await prepareCapturedContextUpdate({
+    ...captureFromBundle(bundle, record),
+    baseHash
+  });
+  const matchedBy = adopted ? "adopted" : lineage ? "lineage" : "name";
+  const base = { bundle, bundleHash, localName, record, matchedBy, baseHash, preview };
+
+  if (!lineage) {
+    return { ...base, action: "choose" };
+  }
+
+  // Asked in this order for a reason. Whether the bundle has anything new comes
+  // first, because after a merge the local copy matches neither side by design:
+  // its contents differ from the bundle permanently, and reading that as
+  // "behind" would offer to overwrite the merge with the same material it was
+  // built from, every single time. Nothing new upstream means nothing to do,
+  // whatever the two copies now look like.
+  const stillCurrent =
+    (typeof record.importedFrom?.bundleFingerprint === "string" &&
+      record.importedFrom.bundleFingerprint === bundleHash) ||
+    !preview.changed;
+  if (stillCurrent) {
+    return { ...base, action: "current" };
+  }
+
+  // They have moved, so this is about what taking it would cost here. No
+  // baseline means no way to prove this copy is untouched, and replacing an
+  // edited copy loses the edits — merge is the answer whenever it cannot be
+  // ruled out.
+  //
+  // A baseline left by a different origin does not count, which is what makes
+  // adoption safe: saying two contexts are the same does not make this copy's
+  // material disposable, and it came from somewhere else entirely.
+  const baseline =
+    record.importedFrom?.id === bundleId ? record.importedFrom.fingerprint : null;
+  const diverged = typeof baseline !== "string" || baseline !== baseHash;
+  return { ...base, action: diverged ? "merge" : "replace" };
+}
+
+// The fast-forward: this copy has not been touched since it arrived, so the
+// bundle's contents replace it wholesale. It stays the same context — same id,
+// same name, same connected sessions — because only its contents were ever
+// stale.
+export async function replaceContextFromBundle({ bundleFolder, targetId, baseHash }) {
+  const bundle = await readImportBundle(bundleFolder);
+  const record = await readContext(targetId);
+  if (!record) {
+    throw new ContextError("The context selected for this import no longer exists.");
+  }
+  const result = await updateCapturedContext({
+    ...captureFromBundle(bundle, record),
+    baseHash,
+    updatedFrom: "import"
+  });
+  return { ...result, record: await recordImportLineage(result.record, bundle) };
+}
+
+// Both copies moved, so the model reconciled them and this applies its work.
+// The lineage is re-stamped from the bundle in the same breath: a merge that
+// did not record which version it consumed would be re-offered, against the
+// same stale baseline, on every later import.
+//
+// Two things are checked that `updateCapturedContext` cannot check for itself,
+// because it knows about a target and knows nothing about a bundle.
+//
+// The target has to be this bundle's copy. A capture proves only that it was
+// built against *some* local context at a known base hash, so without this an
+// unrelated context could be updated here and then have this bundle's lineage
+// stamped over its own.
+//
+// And the bundle has to be the one that was merged. Nothing stops upstream
+// changing between drafting and applying, and stamping the newer fingerprint
+// over an older draft is the worst outcome available: the late material is
+// absent, and the next import says `current` and never offers it again.
+export async function applyImportMerge({ bundleFolder, capture }) {
+  const bundle = await readImportBundle(bundleFolder);
+  const bundleId = typeof bundle.manifest.id === "string" ? bundle.manifest.id : null;
+  const record = await readContext(
+    typeof capture?.targetId === "string" ? capture.targetId : ""
+  );
+  if (!record) {
+    throw new ContextError("The context this merge was prepared for no longer exists.");
+  }
+  if (!isBundleCopy(record, bundleId)) {
+    throw new ContextError(
+      `This merge is addressed to "${record.name}", which is not recorded as the copy ` +
+        "this bundle belongs to. Resolve the import again and rebuild the merge from what " +
+        "it prints."
+    );
+  }
+  if (capture.bundleHash !== fingerprintImportBundle(bundle)) {
+    throw new ContextError(
+      "The bundle changed while this merge was being prepared, so applying it would drop " +
+        "whatever arrived late. Resolve the import again and rebuild the merge from the " +
+        "current bundle."
+    );
+  }
+  const result = await updateCapturedContext({ ...capture, updatedFrom: "import" });
+  return { ...result, record: await recordImportLineage(result.record, bundle) };
 }
 
 // Rewrites only the declarations on a context's manifest, in place. This is the
@@ -1007,6 +1344,10 @@ export async function exportContext({ record, destination, force = false, routin
     manifest.schema = CONTEXT_SCHEMA;
     manifest.profileFile = "profile.md";
     delete manifest.kind;
+    // Lineage is this machine's bookkeeping about where its own copy came from,
+    // and its fingerprint describes a context that only exists here. It means
+    // nothing to whoever receives the bundle, whose import records its own.
+    delete manifest.importedFrom;
     // The last point at which this machine's copy becomes someone else's. Run
     // the declarations back through the whitelist here, so whatever a hand edit
     // may have added beside them — a command, an environment, a token — is not

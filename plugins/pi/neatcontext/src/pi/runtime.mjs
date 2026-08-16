@@ -24,7 +24,6 @@ import {
   deleteContext as deleteStoredContext,
   exportContext as exportStoredContext,
   fingerprintContext,
-  importCapturedContext,
   CONTEXT_MISSING_MESSAGE,
   ContextError,
   listKnowledgeFiles,
@@ -34,6 +33,7 @@ import {
   renderContext,
   updateCapturedContext
 } from "../core/context-store.mjs";
+import { runImport } from "../core/import-commands.mjs";
 import {
   addExtensionToContext,
   removeExtensionFromContext,
@@ -748,34 +748,20 @@ export async function describeContext({ context, useWhen, alias } = {}) {
     : "Pass a routing description as `useWhen`, or words to remember as `alias`.";
 }
 
-export async function importContext({ from, name } = {}) {
+export async function importContext({ from, name, into, mergedFrom, yes, consume } = {}) {
   const source = typeof from === "string" ? from : "";
   if (source.trim().length === 0) {
     return "Pass the shared bundle folder to import from.";
   }
-  try {
-    const result = await importCapturedContext({
-      bundleFolder: source,
-      name: typeof name === "string" ? name : ""
-    });
-    await putCard(result.record.id, {
-      useWhen: result.routingDescription,
-      source: result.profileText
-    }).catch(() => undefined);
-    return [
-      `Imported the "${result.record.name}" conversation context.`,
-      `  Domain profile:   ${result.record.profilePath}`,
-      `  Knowledge folder: ${result.record.knowledgeFolder} (${result.knowledgeFileCount} files)`,
-      `  Local bundle:     ${result.record.directory}`,
-      `  Connect it with:  /neatcontext-use ${result.record.name}`,
-      `The shared source folder (${source}) was left untouched.`
-    ].join("\n");
-  } catch (error) {
-    if (error instanceof ContextError) {
-      return error.message;
-    }
-    throw error;
-  }
+  return runImport({
+    bundleFolder: source,
+    name: typeof name === "string" ? name : "",
+    into: typeof into === "string" ? into : "",
+    mergedFrom: typeof mergedFrom === "string" ? mergedFrom : "",
+    confirmed: yes === true,
+    consume: consume === true,
+    useCommand: "/neatcontext-use"
+  });
 }
 
 export async function exportContext({ context, destination, force = false } = {}) {
