@@ -933,6 +933,21 @@ function captureFromBundle(bundle, record) {
   };
 }
 
+// Whether a local context is this bundle's copy here.
+//
+// Two ways to be one: it was imported from that bundle and recorded the lineage,
+// or it *is* that context, exported and brought back. The second needs no
+// lineage of its own — the ids simply match — and leaving it out is how a merge
+// came to be offered and then refused on every attempt, because resolution
+// counted it and application did not. One predicate, used by both.
+function isBundleCopy(record, bundleId) {
+  return (
+    typeof bundleId === "string" &&
+    bundleId.length > 0 &&
+    (record.id === bundleId || record.importedFrom?.id === bundleId)
+  );
+}
+
 // What a bundle holds, independent of the machine it came from. Revision and
 // timestamps are left out deliberately: re-exporting the same material must not
 // look like a change, because "have they moved?" is a question about content.
@@ -1051,34 +1066,45 @@ export async function resolveImportTarget({ bundleFolder, into }) {
   const contexts = await listContexts();
   const bundleId = typeof bundle.manifest.id === "string" ? bundle.manifest.id : null;
   const adopt = (into ?? "").trim();
+  const bundleHash = fingerprintImportBundle(bundle);
 
-  // Adoption is the user supplying the identity the bundle could not prove —
-  // most often for a copy imported before lineage was recorded. It is taken as
-  // stated, and the write that follows stamps the lineage, so the assertion is
-  // needed once rather than at every later import.
-  const adopted =
+  const selected =
     adopt.length > 0
       ? (contexts.find(
           (context) =>
             context.id === adopt || context.name.toLowerCase() === adopt.toLowerCase()
         ) ?? null)
       : null;
-  if (adopt.length > 0 && !adopted) {
+  if (adopt.length > 0 && !selected) {
     throw new ContextError(`No context here is named "${adopt}".`);
   }
 
-  const bundleHash = fingerprintImportBundle(bundle);
-  const lineageMatches = bundleId
-    ? contexts.filter(
-        (context) => context.id === bundleId || context.importedFrom?.id === bundleId
-      )
-    : [];
+  const named =
+    contexts.find((context) => context.name.toLowerCase() === localName.toLowerCase()) ?? null;
+
+  // A bundle carrying no id cannot be recognised again, so nothing here can
+  // truthfully be recorded as its copy: the lineage write has no key to store,
+  // and a merge drafted against it could never be proved to belong to it. Such
+  // a bundle can still arrive — it just arrives as its own context, and saying
+  // so beats offering a reconciliation that cannot be persisted or applied.
+  if (!bundleId && (selected || named)) {
+    return {
+      action: "unlinkable",
+      bundle,
+      bundleHash,
+      localName,
+      record: selected ?? named,
+      matchedBy: null
+    };
+  }
+
+  const lineageMatches = contexts.filter((context) => isBundleCopy(context, bundleId));
 
   // Forking with `--name` leaves two local contexts carrying one lineage id, so
   // "the copy from this bundle" stops naming a single thing. Choosing one would
   // be choosing by list order — alphabetical, since `listContexts` sorts by
   // name — and quietly updating the fork instead of the original. Ask instead.
-  if (!adopted && lineageMatches.length > 1) {
+  if (!selected && lineageMatches.length > 1) {
     return {
       action: "choose",
       bundle,
@@ -1090,10 +1116,15 @@ export async function resolveImportTarget({ bundleFolder, into }) {
     };
   }
 
-  const lineage = adopted ?? lineageMatches[0] ?? null;
-  const named = contexts.find(
-    (context) => context.name.toLowerCase() === localName.toLowerCase()
-  );
+  // `--into` does two different jobs, and only one of them is an adoption.
+  //
+  // Naming a context that already carries this lineage is picking between
+  // copies, which is what forking makes necessary. Treating that as a fresh
+  // assertion of identity would restamp it identity-only and throw away a
+  // baseline that was both valid and earned — turning the safe fast-forward it
+  // qualified for into a merge, on a copy nobody had touched.
+  const adopted = selected && !isBundleCopy(selected, bundleId) ? selected : null;
+  const lineage = selected ?? lineageMatches[0] ?? null;
   const record = lineage ?? named ?? null;
   if (!record) {
     return { action: "create", bundle, bundleHash, localName, record: null, matchedBy: null };
@@ -1183,7 +1214,7 @@ export async function applyImportMerge({ bundleFolder, capture }) {
   if (!record) {
     throw new ContextError("The context this merge was prepared for no longer exists.");
   }
-  if (!bundleId || record.importedFrom?.id !== bundleId) {
+  if (!isBundleCopy(record, bundleId)) {
     throw new ContextError(
       `This merge is addressed to "${record.name}", which is not recorded as the copy ` +
         "this bundle belongs to. Resolve the import again and rebuild the merge from what " +

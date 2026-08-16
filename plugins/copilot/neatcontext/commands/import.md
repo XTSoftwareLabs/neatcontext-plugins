@@ -37,6 +37,9 @@ the printed `Import action`:
   since, so the newer copy can be taken whole. Relay the preview, ask the user
   to confirm, and only then rerun the same command with `--yes`.
 - `merge` — both copies have changed. Reconcile them yourself, below.
+- `unlinkable` — the bundle carries no context id, so it cannot be tied to
+  anything already here. Relay that, and offer `--name "<new name>"` to bring
+  it in as its own context.
 - `choose` — the target is not decidable. Either a context of the same name is
   here but nothing records a shared origin, or several contexts are copies of
   this bundle because one was forked. Relay the options and stop until the user

@@ -24,6 +24,7 @@ A bundle this machine has not seen is imported immediately and the output says s
 - `current` — the context here already holds everything in the bundle. Relay that and stop.
 - `replace` — the local copy came from this bundle and has not been edited since, so the newer copy can be taken whole. Relay the preview, ask the user to confirm, and only then rerun the same command with `--yes`.
 - `merge` — both copies have changed. Reconcile them yourself, below.
+- `unlinkable` — the bundle carries no context id, so it cannot be tied to anything already here. Relay that, and offer `--name "<new-name>"` to bring it in as its own context.
 - `choose` — the target is not decidable. Either a context of the same name is here but nothing records a shared origin, or several contexts are copies of this bundle because one was forked. Relay the options and stop until the user picks: rerun with `--into "<name>"` to name the context they mean, or with `--name "<new-name>"` to keep a separate copy.
 
 Never answer `choose` on the user's behalf. Two people naming a context the same thing is not evidence that it is the same context, and the two answers are not recoverable from each other.

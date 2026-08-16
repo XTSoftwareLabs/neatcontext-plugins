@@ -552,6 +552,100 @@ describe("what import must not overwrite or forget", () => {
   });
 });
 
+// `--into` names a context, and "which one" and "this is the one" are different
+// claims. So is a bundle that can be recognised again versus one that cannot.
+// Each of these is a way the command could answer confidently and be wrong.
+describe("what naming a context with --into does and does not assert", () => {
+  it("selects among copies without discarding the baseline of the one chosen", async () => {
+    const bundle = await sharedBundle();
+    const directory = localBundle(await cli("import", "--from", bundle));
+    await cli("import", "--from", bundle, "--name", "AAA Fork");
+    const earned = (await manifestAt(directory)).importedFrom;
+    assert.equal(typeof earned.fingerprint, "string");
+
+    // Picking the original out of two copies is disambiguation, not a fresh
+    // claim about where it came from — it already knows.
+    assert.match(
+      await cli("import", "--from", bundle, "--into", "Team Checkout"),
+      /Import action: current/
+    );
+    assert.deepEqual(
+      (await manifestAt(directory)).importedFrom,
+      earned,
+      "selecting a copy must not restamp what it already proved"
+    );
+
+    // And because the baseline survived, an untouched copy still qualifies for
+    // the fast-forward rather than being pushed into a merge.
+    await upstreamUpdate(bundle, { profileNote: "Upstream: later work." });
+    assert.match(
+      await cli("import", "--from", bundle, "--into", "Team Checkout"),
+      /Import action: replace/
+    );
+  });
+
+  it("can apply a merge into the very context the bundle was exported from", async () => {
+    // No import here at all: this context *is* the bundle's origin, so it has
+    // no importedFrom of its own and is recognised by id alone.
+    const { output } = { output: await save() };
+    const directory = /Context folder:\s+(.+)/.exec(output)[1];
+    const destination = path.join(home, `own-export-${serial++}`);
+    await cli("export", "Team Checkout", "--to", destination);
+    const bundle = path.join(destination, path.basename(directory));
+
+    await localWork("Team Checkout", "# Session summary\n\nLocal work after exporting.");
+    await upstreamUpdate(bundle, { profileNote: "Upstream: edited the shared copy." });
+
+    const resolved = await cli("import", "--from", bundle);
+    assert.match(resolved, /Import action: merge/);
+
+    const merged = path.join(home, `own-merge-${serial++}.json`);
+    await writeFile(
+      merged,
+      JSON.stringify({
+        schema: 1,
+        name: field(resolved, "Context name"),
+        targetId: field(resolved, "Context id"),
+        baseHash: field(resolved, "Base hash"),
+        bundleHash: field(resolved, "Bundle hash"),
+        profile: capture().profile + "\n\nReconciled with the exported copy.",
+        routingDescription: capture().routingDescription,
+        knowledge: [{ path: "session-summary.md", content: "# Session summary\n\nBoth.\n" }]
+      })
+    );
+    // The merge the command offered has to be one the command will accept.
+    assert.match(
+      await cli("import", "--from", bundle, "--merged-from", merged, "--yes", "--consume"),
+      /Merged the bundle into the "Team Checkout" context\./
+    );
+    assert.equal((await manifestAt(directory)).importedFrom.id, (await manifestAt(bundle)).id);
+  });
+
+  it("offers no reconciliation for a bundle that carries no identity", async () => {
+    const bundle = await sharedBundle();
+    await cli("import", "--from", bundle);
+    const manifest = await manifestAt(bundle);
+    delete manifest.id;
+    await writeFile(path.join(bundle, "context.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    // Nothing can be recorded about such a bundle, so `current` and `merge`
+    // would both be answers the command could not keep.
+    for (const args of [[], ["--into", "Team Checkout"]]) {
+      const resolved = await cli("import", "--from", bundle, ...args);
+      assert.match(resolved, /Import action: unlinkable/);
+      assert.match(resolved, /carries no context id/);
+      assert.match(resolved, /--name "<new name>"/);
+      assert.doesNotMatch(resolved, /Import action: (current|merge|replace|choose)/);
+    }
+
+    // Forking is still open, and is the only thing this bundle can honestly do.
+    assert.match(
+      await cli("import", "--from", bundle, "--name", "Anonymous Bundle"),
+      /Imported the "Anonymous Bundle" conversation context/
+    );
+  });
+});
+
 // Two paths the command line cannot stage: a target deleted between resolving
 // an import and applying it, and a lineage stamp that fails after the import
 // has already landed. Both are reached directly, because what they protect is

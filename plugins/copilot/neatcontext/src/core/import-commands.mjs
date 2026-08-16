@@ -257,6 +257,24 @@ export async function runImport({
     // adopts the local context as this bundle's copy; since no baseline against
     // this bundle exists for it, adopting leads to a merge and never to a
     // replacement.
+    // No id in the bundle means no key to recognise it by, now or later. It can
+    // still be brought in — as its own context — but it cannot be tied to one
+    // already here, so the reconciling answers are not offered rather than
+    // offered and then found to be unusable.
+    if (resolved.action === "unlinkable") {
+      lines.push("Import action: unlinkable");
+      lines.push(
+        `This bundle carries no context id, so there is no way to establish that ` +
+          `"${record.name}" is a copy of it — and no way to record it if there were. ` +
+          "Whoever exported it should do so from a current build; a bundle written by " +
+          "one carries the id this needs."
+      );
+      lines.push(
+        'It can still be brought in as its own context: re-run with --name "<new name>".'
+      );
+      return lines.join("\n");
+    }
+
     // Several local contexts already carry this bundle's lineage, which is what
     // forking leaves behind. Any of them could be the one meant, and picking is
     // the user's call rather than the list order's.
