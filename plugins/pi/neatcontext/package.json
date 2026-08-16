@@ -1,6 +1,6 @@
 {
   "name": "@xtsoftwarelabs/neatcontext-pi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Save pi work as reusable, domain-aware context",
   "license": "MIT",
