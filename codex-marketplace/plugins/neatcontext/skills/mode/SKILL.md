@@ -1,6 +1,6 @@
 ---
 name: mode
-description: Show or set NeatContext routing to auto, ask, or manual for the current Codex thread, with an optional global default for new threads. Use only when the user explicitly invokes this skill or clearly asks to change routing behavior.
+description: Show or set NeatContext routing to auto, ask, or manual for Codex, with an optional default shared with every other NeatContext host. Use only when the user explicitly invokes this skill or clearly asks to change routing behavior.
 ---
 
 # Routing mode

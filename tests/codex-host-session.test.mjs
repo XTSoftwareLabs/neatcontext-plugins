@@ -1,8 +1,13 @@
-// The record that tells a long-lived Codex plugin process which thread its host
-// is on now. Exercised directly here; the behavior it buys is in
-// codex-session-drift.test.mjs. This is the Codex copy of the module — same
-// mechanism as the Claude Code one, but its host key has no CLAUDE_PID
-// equivalent to consult, only the explicit key and the parent process.
+// The record that tells a long-lived plugin process which session its host is on
+// now. This is the Codex copy of the module — same mechanism as the Claude Code
+// one, but its host key has no CLAUDE_PID equivalent to consult, only the
+// explicit key and the parent process.
+//
+// Codex itself no longer routes through it: its hooks and its MCP server are
+// spawned from different parents, so the two never shared a key, and
+// tests/codex-session-scope.test.mjs holds the plugin to one scope instead. What
+// the Codex bundle still calls is `pruneHostPointers`, which clears the files
+// older versions of the plugin left behind.
 
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";

@@ -1,6 +1,6 @@
 ---
 name: status
-description: Report the NeatContext context and routing mode active in the current Codex thread, including missing-file or stale-routing warnings. Use when the user asks which context is connected or explicitly invokes this skill.
+description: Report the NeatContext context and routing mode active in Codex, including missing-file or stale-routing warnings. Use when the user asks which context is connected or explicitly invokes this skill.
 ---
 
 # Context status

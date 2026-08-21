@@ -72,14 +72,14 @@ saved. Your next messages will use its domain profile and knowledge folder.
 The saved context keeps the investigation approach, system knowledge, findings,
 and verified resolution—not the raw conversation.
 
-This thread had nothing connected, so saving also connected it — the work it
-just wrote up is the work it is still doing. A thread that already has a context
-connected keeps it, even when you save under a new name; use `$neatcontext:use`
-when you actually want to switch.
+Nothing was connected, so saving also connected what it just wrote — the work it
+wrote up is the work it is still doing. When a context is already connected it
+stays connected, even if you save under a new name; use `$neatcontext:use` when
+you actually want to switch.
 
 After more work on the same subject, invoke `$neatcontext:save` again. With no
-name it updates the context this thread is now connected to, previewing the
-merged result and asking before applying it.
+name it updates the connected context, previewing the merged result and asking
+before applying it.
 
 When a similar issue appears later, connect the saved context in a new Codex
 thread with `$neatcontext:use`. NeatContext can also route you to the right
@@ -125,15 +125,18 @@ later.
 
 ### `$neatcontext:use [name or number]`
 
-Connect a context to the current Codex thread.
+Connect a context to Codex.
 
-Invoke the skill without a name to see the available choices. Each Codex thread
-keeps its own connected context.
+Invoke the skill without a name to see the available choices. One context is
+connected at a time, and every part of the plugin sees the same one — the
+skills you invoke, the routing the model does for itself, and the grounding it
+loads. Codex does not tell the plugin's MCP server which thread it is serving,
+so the connection is shared by the Codex threads and windows on this machine
+rather than kept per thread; switch it whenever the subject changes.
 
 ### `$neatcontext:disconnect`
 
-Disconnect the context from the current Codex thread. Other threads keep their
-own connections, and the context itself is not deleted.
+Disconnect the connected context. The context itself is not deleted.
 
 ### `$neatcontext:list`
 
@@ -141,7 +144,7 @@ List all contexts you can connect.
 
 ### `$neatcontext:status`
 
-Show the context connected to the current thread and the current routing mode.
+Show the connected context and the current routing mode.
 It also reports problems such as missing context files or knowledge
 folders.
 
@@ -206,15 +209,16 @@ is deleted with it.
 
 ### `$neatcontext:mode [auto|ask|manual]`
 
-Choose how the current thread switches between contexts:
+Choose how Codex switches between contexts:
 
 - `auto` — switch on a clear match and tell you; ask when the choice is unclear;
   this is the default
 - `ask` — ask before every switch, clear match or not
 - `manual` — switch only when you invoke `$neatcontext:use`
 
-Invoke `$neatcontext:mode` without an argument to show the current mode. Add
-`--global` to set the default for new threads:
+Invoke `$neatcontext:mode` without an argument to show the current mode. Like
+the connected context, the mode is shared by the Codex sessions on this
+machine. `--global` sets the same default for every host that uses NeatContext:
 
 ```text
 $neatcontext:mode auto --global
