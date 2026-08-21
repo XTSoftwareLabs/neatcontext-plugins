@@ -106,8 +106,11 @@ test("marketplace and plugin manifests describe an isolated Codex package", asyn
 
   const mcp = JSON.parse(await readFile(path.join(pluginRoot, ".mcp.json"), "utf8"));
   assert.deepEqual(mcp.mcpServers.neatcontext.args, ["./src/codex/mcp-bridge.mjs"]);
-  assert.deepEqual(mcp.mcpServers.neatcontext.env_vars, ["CODEX_THREAD_ID"]);
   assert.equal(mcp.mcpServers.neatcontext.cwd, ".");
+  // Nothing is forwarded into the bridge: Codex scrubs the MCP environment, so
+  // a declared passthrough would only suggest the bridge knows which thread it
+  // is serving. It does not — see src/codex/session.mjs.
+  assert.equal(mcp.mcpServers.neatcontext.env_vars, undefined);
 });
 
 test("all namespaced workflows are real skills without scaffold placeholders", async () => {
@@ -137,24 +140,33 @@ test("all namespaced workflows are real skills without scaffold placeholders", a
   }
 });
 
-test("Codex CLI isolates routing by CODEX_THREAD_ID", async () => {
+test("Codex routing settings are shared, not split by CODEX_THREAD_ID", async () => {
+  // CODEX_THREAD_ID reaches the CLI and never the MCP bridge, so scoping on it
+  // would leave the two halves enforcing different modes. It is ignored: what
+  // one Codex process sets, the next one reads.
   const home = await mkdtemp(path.join(os.tmpdir(), "neatcontext-codex-routing-"));
   const env = {
     NEATCONTEXT_HOME: home,
     CODEX_THREAD_ID: "thread-a"
   };
 
-  const changed = await runNode(cli, ["mode", "auto"], { env });
+  const changed = await runNode(cli, ["mode", "manual"], { env });
   assert.equal(changed.code, 0);
-  assert.match(changed.stdout, /Other Codex threads keep theirs/);
+  assert.match(changed.stdout, /Context routing is now manual everywhere/);
 
   const current = await runNode(cli, ["mode"], { env });
-  assert.match(current.stdout, /Context routing is auto \(this session\)/);
+  assert.match(current.stdout, /Context routing is manual/);
 
   const other = await runNode(cli, ["mode"], {
     env: { ...env, CODEX_THREAD_ID: "thread-b" }
   });
-  assert.match(other.stdout, /Context routing is auto \(the default\)/);
+  assert.match(other.stdout, /Context routing is manual/);
+
+  const back = await runNode(cli, ["mode", "auto"], {
+    env: { ...env, CODEX_THREAD_ID: "thread-b" }
+  });
+  assert.match(back.stdout, /In auto mode Codex switches context on its own/);
+  assert.match((await runNode(cli, ["mode"], { env })).stdout, /Context routing is auto/);
 });
 
 test("Codex saves conversation provenance without touching a transcript", async () => {
@@ -227,10 +239,7 @@ test("Codex saves conversation provenance without touching a transcript", async 
   assert.match(connected.stdout, /Connected the "Codex smoke context" context/);
 
   const disconnected = await runNode(cli, ["disconnect"], { env });
-  assert.match(
-    disconnected.stdout,
-    /Disconnected the "Codex smoke context" context from this thread/
-  );
+  assert.match(disconnected.stdout, /Disconnected the "Codex smoke context" context/);
   const status = await runNode(cli, ["status"], { env });
   assert.match(status.stdout, /No context is connected yet/);
 });
@@ -322,12 +331,13 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     }),
     "utf8"
   );
-  // Saved from another thread on purpose: a save connects the thread it ran in,
-  // and this test needs "selected-thread" to start with nothing selected.
+  // A save connects a session that had nothing connected, and this test needs
+  // to start with nothing connected — so the save runs under a session id of
+  // its own, which is the one thing that scopes a Codex process separately.
   assert.equal(
     (
       await runNode(cli, ["save", "--from", capturePath, "--consume"], {
-        env: { ...env, CODEX_THREAD_ID: "authoring-thread" }
+        env: { ...env, NEATCONTEXT_SESSION_ID: "authoring-session" }
       })
     ).code,
     0
@@ -346,14 +356,14 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
   assert.equal(unselectedHookResult.code, 0);
   const unselectedHook =
     JSON.parse(unselectedHookResult.stdout).hookSpecificOutput.additionalContext;
-  assert.match(unselectedHook, /No NeatContext context is selected/);
+  assert.match(unselectedHook, /No NeatContext context is connected/);
   assert.match(unselectedHook, /load grounding only after `use_context` succeeds/);
 
   assert.equal((await runNode(cli, ["use", "Selected smoke context"], { env })).code, 0);
   const hookResult = await runNode(hook, [], { env, input: hookInput });
   assert.equal(hookResult.code, 0);
   const hookOutput = JSON.parse(hookResult.stdout).hookSpecificOutput.additionalContext;
-  assert.match(hookOutput, /"Selected smoke context" context is selected/);
+  assert.match(hookOutput, /"Selected smoke context" context is connected/);
   assert.match(hookOutput, /otherwise reuse the existing result/);
   assert.match(hookOutput, /Do not call `get_context` merely/);
 
@@ -371,7 +381,7 @@ test("selected contexts advertise one-shot grounding guidance", async () => {
     const listed = await rpc.call({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     const getContext = listed.result.tools.find((tool) => tool.name === "get_context");
     assert.equal(getContext.annotations.readOnlyHint, true);
-    assert.match(getContext.description, /already selected for this thread/);
+    assert.match(getContext.description, /already connected in this Codex session/);
     assert.match(getContext.description, /Do not call merely/);
   } finally {
     await rpc.close();

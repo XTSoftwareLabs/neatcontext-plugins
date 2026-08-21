@@ -1,6 +1,6 @@
 ---
 name: disconnect
-description: Disconnect the NeatContext Context from the current Codex thread. Use when the user explicitly invokes this skill or asks to disconnect, detach, clear, or stop using the connected context.
+description: Disconnect the connected NeatContext Context from Codex. Use when the user explicitly invokes this skill or asks to disconnect, detach, clear, or stop using the connected context.
 ---
 
 # Disconnect context
@@ -12,5 +12,4 @@ file. Run:
 node "<plugin-root>/src/codex/neatcontext-cli.mjs" disconnect
 ```
 
-Relay the output verbatim. Do not run a redundant status check. The command
-affects only the current Codex thread.
+Relay the output verbatim. Do not run a redundant status check.

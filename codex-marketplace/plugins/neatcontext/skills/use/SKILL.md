@@ -1,6 +1,6 @@
 ---
 name: use
-description: Connect or switch this Codex thread to a local NeatContext Context by name or list number. Use only when the user explicitly invokes this skill, names a context to connect, or agrees to a routing suggestion.
+description: Connect or switch Codex to a local NeatContext Context by name or list number. Use only when the user explicitly invokes this skill, names a context to connect, or agrees to a routing suggestion.
 ---
 
 # Use context
