@@ -1,11 +1,12 @@
 // NeatContext plugin MCP server for Codex.
 //
+// Codex starts this process with an environment that carries no thread id and
+// no way to derive one, so the selection it reads is the one every other part
+// of the plugin reads — see src/codex/session.mjs. Nothing here tries to
+// discover which thread it is serving: a bridge that scoped itself to a thread
+// would answer from a file the skills cannot see.
+//
 // Behaviors kept from the Claude Code bridge:
-//   * this process outlives the thread it was spawned in — /new starts a new
-//     one without restarting it — so the host session is re-resolved before
-//     every message rather than read once from the environment. Without that,
-//     the bridge goes on serving the pre-/new thread's context while the
-//     SessionStart hook and the skills write the new one's.
 //   * initialize advertises tools.listChanged, and we poll the selected
 //     context so the host refreshes its tool list when the user runs
 //     $neatcontext:use (or the session routes itself).
@@ -15,7 +16,7 @@
 //     get_context instead of silently vanishing.
 
 import readline from "node:readline";
-import { publishSessionId, refreshSessionId } from "./session.mjs";
+import "./session.mjs";
 import { readSelection } from "../core/local-state.mjs";
 import {
   CONTEXT_MISSING_MESSAGE,
@@ -47,8 +48,8 @@ const GET_CONTEXT_TOOL = {
   title: "Get Context",
   description:
     "Load the domain profile and local knowledge pointers for the NeatContext Context " +
-    "already selected for this thread. Do not call merely to discover whether a Context " +
-    "is selected.",
+    "already connected in this Codex session. Do not call merely to discover whether a " +
+    "Context is connected.",
   inputSchema: {
     type: "object",
     properties: {
@@ -80,7 +81,7 @@ const GET_CONTEXT_TOOL = {
 // are both locked. `$neatcontext:save` is the one that always opens: it builds
 // the first context out of the conversation already happening. So it leads when
 // there is nothing to connect.
-const NOTHING_CONNECTED_HEAD = "No NeatContext Context is selected for this thread.";
+const NOTHING_CONNECTED_HEAD = "No NeatContext Context is connected.";
 
 // The manual-mode version, and the fallback whenever no menu follows. Routing
 // is off here, so a command the user types is genuinely the only way forward.
@@ -189,7 +190,7 @@ const ROUTING_TOOLS = new Map([
 // get_context instead, which is re-read on every call and refreshed live by
 // tools/list_changed. These instructions do one job: get get_context called at
 // the right moments.
-const CONTEXT_INSTRUCTIONS = `This Codex thread has a selected NeatContext Context: one domain profile and local knowledge stored on this machine.
+const CONTEXT_INSTRUCTIONS = `This Codex session has a connected NeatContext Context: one domain profile and local knowledge stored on this machine.
 
 For a request in that Context's scope, call get_context only when its current result is not already present since the latest context switch or compaction; otherwise reuse the existing result. Never call get_context merely to check connection status. Read the profile in full when grounding is loaded.
 
@@ -202,7 +203,7 @@ Cite the exact file path of anything you rely on. When the profile and the knowl
 // session or from another window on the same workspace. So this must never
 // state "nothing is connected" as a settled fact; it defers the current state
 // to get_context, which is the only thing that stays true.
-const NO_CONTEXT_INSTRUCTIONS = `No NeatContext Context was selected when this thread started. A Context can be selected later with use_context.
+const NO_CONTEXT_INSTRUCTIONS = `No NeatContext Context was connected when this session started. A Context can be connected later with use_context.
 
 Do not call get_context merely to check connection status. Continue normal work without NeatContext grounding until use_context succeeds or the user explicitly asks to refresh NeatContext state.
 
@@ -514,17 +515,10 @@ let lastVersion = undefined;
 // What the host's tool list depends on. Switching between contexts has to
 // change this; so does the routing mode, because leaving manual has to make the
 // routing tools appear without waiting for a restart.
-// Re-resolve which thread this process is serving, and publish the answer so a
-// skill-run command can tell whether its write is the one this bridge will read.
-async function syncSession() {
-  await refreshSessionId();
-  await publishSessionId();
-}
-
 async function currentVersion() {
-  // The session is part of it: `/new` changes what this process is grounded in
-  // without changing anything the selection or the mode can report, and the
-  // host has to be told to drop the previous thread's extension tools.
+  // The session is part of it for hosts that scope by one. Codex does not give
+  // this process a session to scope by, so here it is a constant and the
+  // selection below is what moves.
   const session = sessionId() ?? "none";
   const mode = resolveMode(await readRouting(), sessionId());
   const context = await activeContext();
@@ -539,11 +533,6 @@ async function currentVersion() {
 
 async function handleMessage(message) {
   const isNotification = message.id === undefined || message.id === null;
-  // Before anything reads a selection or a routing mode: which thread this
-  // host is on may have changed since the last message, and every one of those
-  // is per session.
-  await syncSession();
-
   // Routing tools decide which context serves the session next, so they are
   // answered before that choice is read.
   if (message.method === "tools/call" && ROUTING_TOOLS.has(message.params?.name)) {
@@ -655,10 +644,8 @@ function startVersionWatch() {
   watching = true;
   setInterval(async () => {
     if (!started) return;
-    // The host does not send a message when the user runs `/new`, so this tick
-    // is where a thread change is noticed if nothing else asks first — and
-    // where the published answer stays fresh enough to be checked against.
-    await syncSession();
+    // The host does not send a message when a skill connects a context, so this
+    // tick is where that is noticed if nothing else asks first.
     const version = await currentVersion();
     if (version !== null && version !== lastVersion) {
       lastVersion = version;

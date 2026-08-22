@@ -1,5 +1,11 @@
 // Which session the host process is on *right now*.
 //
+// The Codex plugin no longer scopes anything by thread — Codex spawns its hooks
+// and its MCP server from different parents, so the pointer below never joined
+// the two halves, and src/codex/session.mjs explains what replaced it. This copy
+// is kept in parity with the Claude Code one, which does use it, and `pruneHostPointers`
+// still runs from the Codex SessionStart hook to clear the files older versions left.
+//
 // A host that identifies its sessions through the environment has a problem the
 // rest of this plugin cannot see: the environment is a snapshot. Codex spawns
 // the MCP bridge once and keeps it for the life of the window, but the thread

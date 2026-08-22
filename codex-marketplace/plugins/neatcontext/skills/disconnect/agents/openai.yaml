@@ -1,7 +1,7 @@
 interface:
   display_name: "Disconnect Context"
-  short_description: "Disconnect this Codex thread from its context"
-  default_prompt: "Use $neatcontext:disconnect to disconnect the context from this thread."
+  short_description: "Disconnect the connected context"
+  default_prompt: "Use $neatcontext:disconnect to disconnect the connected context."
 
 policy:
   allow_implicit_invocation: false

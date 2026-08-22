@@ -5,9 +5,6 @@
       "args": [
         "./src/codex/mcp-bridge.mjs"
       ],
-      "env_vars": [
-        "CODEX_THREAD_ID"
-      ],
       "cwd": "."
     }
   }
